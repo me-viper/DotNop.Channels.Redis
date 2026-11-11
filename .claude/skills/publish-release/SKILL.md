@@ -43,7 +43,7 @@ Run `dotnet tool restore` first, then:
 ## 3. Prepare
 
 - **preview**: `git switch main`. Nothing else.
-- **stable**: on `main`, first check `src/DotNop.Channels.Redis/PublicAPI.Unshipped.txt`. If it has entries besides
+- **stable**: on `main`, first check `src/PublicAPI.Unshipped.txt`. If it has entries besides
   `#nullable enable`, offer to move them into `PublicAPI.Shipped.txt` (sorted, keeping the `#nullable enable` header in
   both) and commit that as `chore: ship public API` before continuing. Note the `main` SHA (`git rev-parse HEAD`) for
   undoing, then run `dotnet nbgv prepare-release`. This creates the `vX.Y` branch
@@ -120,7 +120,7 @@ failed, ask the user whether to create the release anyway.
 
 1. Switch the checkout back to `main` (stable and patch releases leave it on `vX.Y`).
 2. After the first stable release of a major version, offer to set `<PackageValidationBaselineVersion>` in
-   `src/DotNop.Channels.Redis/DotNop.Channels.Redis.csproj` to that version (commit on `main`). Package validation
+   `src/DotNop.Channels.Redis.csproj` to that version (commit on `main`). Package validation
    restores the baseline from nuget.org, so wait until the version is downloadable
    (`https://api.nuget.org/v3-flatcontainer/dotnop.channels.redis/<version>/dotnop.channels.redis.nuspec` returns 200;
    poll in the background, it can take 10+ minutes), then verify with a Release `dotnet pack` before committing —

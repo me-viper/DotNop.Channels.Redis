@@ -76,7 +76,7 @@ git push origin main v1.0.12-preview
    ```
 
 3. After the first stable release of a major version, set the package validation baseline in
-   `src/DotNop.Channels.Redis/DotNop.Channels.Redis.csproj` so later builds fail on breaking API changes:
+   `src/DotNop.Channels.Redis.csproj` so later builds fail on breaking API changes:
 
    ```xml
    <PackageValidationBaselineVersion>1.0.13</PackageValidationBaselineVersion>

@@ -15,7 +15,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\DotNop.Channels.Redis\DotNop.Channels.Redis.csproj" />
+    <ProjectReference Include="..\src\DotNop.Channels.Redis.csproj" />
   </ItemGroup>
 
   <ItemGroup>

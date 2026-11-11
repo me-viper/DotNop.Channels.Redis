@@ -1,9 +1,9 @@
 <Solution>
   <Folder Name="/src/">
-    <Project Path="src/DotNop.Channels.Redis/DotNop.Channels.Redis.csproj" />
+    <Project Path="src/DotNop.Channels.Redis.csproj" />
   </Folder>
   <Folder Name="/tests/">
-    <Project Path="tests/DotNop.Channels.Redis.Tests/DotNop.Channels.Redis.Tests.csproj" />
+    <Project Path="tests/DotNop.Channels.Redis.Tests.csproj" />
   </Folder>
   <Folder Name="/sln/">
     <File Path=".editorconfig" />

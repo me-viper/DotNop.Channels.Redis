@@ -10,8 +10,8 @@ reader and writer can live in different processes. Targets `net10.0` and `net11.
 ```powershell
 dotnet build DotNop.Channels.Redis.slnx
 dotnet test --solution DotNop.Channels.Redis.slnx
-dotnet test --project tests/DotNop.Channels.Redis.Tests -f net10.0 --filter-method "*ReadAllAsync_ConsumesItems"
-dotnet pack src/DotNop.Channels.Redis/DotNop.Channels.Redis.csproj -c Release -o artifacts/packages
+dotnet test --project tests -f net10.0 --filter-method "*ReadAllAsync_ConsumesItems"
+dotnet pack src/DotNop.Channels.Redis.csproj -c Release -o artifacts/packages
 jb cleanupcode DotNop.Channels.Redis.slnx --include="<file1>;<file2>"   # lint; `lint` profile from .sln.DotSettings
 dotnet tool restore; dotnet nbgv get-version                          # version computed from git
 ```
@@ -50,7 +50,7 @@ There is no in-process buffer: every operation goes straight to Redis, and insta
 ## Conventions
 
 - **Public API is tracked** by `Microsoft.CodeAnalysis.PublicApiAnalyzers`: any public surface change must be added to
-  `src/DotNop.Channels.Redis/PublicAPI.Unshipped.txt` (RS0016/RS0017 warnings, errors in `Release`). Entries move to `PublicAPI.Shipped.txt`
+  `src/PublicAPI.Unshipped.txt` (RS0016/RS0017 warnings, errors in `Release`). Entries move to `PublicAPI.Shipped.txt`
   when released.
 - `README.md` is packed into the NuGet package and is the user-facing spec of behavior (options, full modes, completion
   semantics, metrics). Update it together with behavior changes; keep maintainer-only content out of it.
