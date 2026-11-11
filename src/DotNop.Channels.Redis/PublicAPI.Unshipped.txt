@@ -1,0 +1,68 @@
+﻿#nullable enable
+DotNop.Channels.Redis.IRedisValueSerializer<T>
+DotNop.Channels.Redis.IRedisValueSerializer<T>.ReadRedisValue(StackExchange.Redis.RedisValue value) -> T?
+DotNop.Channels.Redis.IRedisValueSerializer<T>.WriteRedisValue(T item) -> StackExchange.Redis.RedisValue
+DotNop.Channels.Redis.JsonRedisValueSerializer<T>
+DotNop.Channels.Redis.JsonRedisValueSerializer<T>.JsonRedisValueSerializer(System.Text.Json.JsonSerializerOptions? options = null) -> void
+DotNop.Channels.Redis.JsonRedisValueSerializer<T>.ReadRedisValue(StackExchange.Redis.RedisValue value) -> T?
+DotNop.Channels.Redis.JsonRedisValueSerializer<T>.WriteRedisValue(T item) -> StackExchange.Redis.RedisValue
+DotNop.Channels.Redis.RedisChannel<T>
+DotNop.Channels.Redis.RedisChannel<T>.Dispose() -> void
+DotNop.Channels.Redis.RedisChannel<T>.Exists() -> bool
+DotNop.Channels.Redis.RedisChannel<T>.RedisChannel(string! channel, StackExchange.Redis.IDatabase! db, DotNop.Channels.Redis.IRedisValueSerializer<T>! serializer, DotNop.Channels.Redis.RedisChannelOptions? opts) -> void
+DotNop.Channels.Redis.RedisChannel<T>.Reset() -> void
+DotNop.Channels.Redis.RedisChannelOptions
+DotNop.Channels.Redis.RedisChannelOptions.Capacity.get -> int
+DotNop.Channels.Redis.RedisChannelOptions.ExpireAfterCompletion.get -> System.TimeSpan
+DotNop.Channels.Redis.RedisChannelOptions.ExpireAfterCompletion.init -> void
+DotNop.Channels.Redis.RedisChannelOptions.FullMode.get -> System.Threading.Channels.BoundedChannelFullMode
+DotNop.Channels.Redis.RedisChannelOptions.FullMode.init -> void
+DotNop.Channels.Redis.RedisChannelOptions.RedisChannelOptions() -> void
+DotNop.Channels.Redis.RedisChannelOptions.RedisChannelOptions(DotNop.Channels.Redis.RedisChannelOptions! original) -> void
+DotNop.Channels.Redis.RedisChannelOptions.RedisChannelOptions(int capacity) -> void
+DotNop.Channels.Redis.RedisChannelReader<T>
+DotNop.Channels.Redis.RedisChannelReader<T>.Dispose() -> void
+DotNop.Channels.Redis.RedisChannelReader<T>.RedisChannelReader(string! channel, StackExchange.Redis.IDatabase! db, DotNop.Channels.Redis.IRedisValueSerializer<T>! serializer) -> void
+DotNop.Channels.Redis.RedisChannelReader<T>.RedisChannelReader(string! channel, StackExchange.Redis.IDatabase! db, DotNop.Channels.Redis.IRedisValueSerializer<T>! serializer, DotNop.Channels.Redis.RedisChannelReaderOptions? opts) -> void
+DotNop.Channels.Redis.RedisChannelReaderOptions
+DotNop.Channels.Redis.RedisChannelReaderOptions.ChannelSlidingExpiration.get -> System.TimeSpan
+DotNop.Channels.Redis.RedisChannelReaderOptions.ChannelSlidingExpiration.init -> void
+DotNop.Channels.Redis.RedisChannelReaderOptions.RedisChannelReaderOptions() -> void
+DotNop.Channels.Redis.RedisChannelReaderOptions.RedisChannelReaderOptions(DotNop.Channels.Redis.RedisChannelReaderOptions! original) -> void
+DotNop.Channels.Redis.RedisChannelWriter<T>
+DotNop.Channels.Redis.RedisChannelWriter<T>.Dispose() -> void
+DotNop.Channels.Redis.RedisChannelWriter<T>.RedisChannelWriter(string! channel, StackExchange.Redis.IDatabase! db, DotNop.Channels.Redis.IRedisValueSerializer<T>! serializer) -> void
+DotNop.Channels.Redis.RedisChannelWriter<T>.RedisChannelWriter(string! channel, StackExchange.Redis.IDatabase! db, DotNop.Channels.Redis.IRedisValueSerializer<T>! serializer, DotNop.Channels.Redis.RedisChannelOptions? opts) -> void
+DotNop.Channels.Redis.Utf8JsonRedisValueSerializer<T>
+DotNop.Channels.Redis.Utf8JsonRedisValueSerializer<T>.ReadRedisValue(StackExchange.Redis.RedisValue value) -> T?
+DotNop.Channels.Redis.Utf8JsonRedisValueSerializer<T>.Utf8JsonRedisValueSerializer(System.Text.Json.JsonSerializerOptions? options = null) -> void
+DotNop.Channels.Redis.Utf8JsonRedisValueSerializer<T>.WriteRedisValue(T item) -> StackExchange.Redis.RedisValue
+override DotNop.Channels.Redis.RedisChannelOptions.<Clone>$() -> DotNop.Channels.Redis.RedisChannelOptions!
+override DotNop.Channels.Redis.RedisChannelOptions.EqualityContract.get -> System.Type!
+override DotNop.Channels.Redis.RedisChannelOptions.Equals(object? obj) -> bool
+override DotNop.Channels.Redis.RedisChannelOptions.GetHashCode() -> int
+override DotNop.Channels.Redis.RedisChannelOptions.PrintMembers(System.Text.StringBuilder! builder) -> bool
+override DotNop.Channels.Redis.RedisChannelOptions.ToString() -> string!
+override DotNop.Channels.Redis.RedisChannelReader<T>.CanCount.get -> bool
+override DotNop.Channels.Redis.RedisChannelReader<T>.CanPeek.get -> bool
+override DotNop.Channels.Redis.RedisChannelReader<T>.Count.get -> int
+override DotNop.Channels.Redis.RedisChannelReader<T>.ReadAllAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Collections.Generic.IAsyncEnumerable<T>!
+override DotNop.Channels.Redis.RedisChannelReader<T>.TryPeek(out T item) -> bool
+override DotNop.Channels.Redis.RedisChannelReader<T>.TryRead(out T item) -> bool
+override DotNop.Channels.Redis.RedisChannelReader<T>.WaitToReadAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<bool>
+override DotNop.Channels.Redis.RedisChannelReaderOptions.Equals(object? obj) -> bool
+override DotNop.Channels.Redis.RedisChannelReaderOptions.GetHashCode() -> int
+override DotNop.Channels.Redis.RedisChannelReaderOptions.ToString() -> string!
+override DotNop.Channels.Redis.RedisChannelWriter<T>.TryComplete(System.Exception? error = null) -> bool
+override DotNop.Channels.Redis.RedisChannelWriter<T>.TryWrite(T item) -> bool
+override DotNop.Channels.Redis.RedisChannelWriter<T>.WaitToWriteAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<bool>
+override sealed DotNop.Channels.Redis.RedisChannelOptions.Equals(DotNop.Channels.Redis.RedisChannelReaderOptions? other) -> bool
+static DotNop.Channels.Redis.RedisChannelOptions.operator !=(DotNop.Channels.Redis.RedisChannelOptions? left, DotNop.Channels.Redis.RedisChannelOptions? right) -> bool
+static DotNop.Channels.Redis.RedisChannelOptions.operator ==(DotNop.Channels.Redis.RedisChannelOptions? left, DotNop.Channels.Redis.RedisChannelOptions? right) -> bool
+static DotNop.Channels.Redis.RedisChannelReaderOptions.operator !=(DotNop.Channels.Redis.RedisChannelReaderOptions? left, DotNop.Channels.Redis.RedisChannelReaderOptions? right) -> bool
+static DotNop.Channels.Redis.RedisChannelReaderOptions.operator ==(DotNop.Channels.Redis.RedisChannelReaderOptions? left, DotNop.Channels.Redis.RedisChannelReaderOptions? right) -> bool
+virtual DotNop.Channels.Redis.RedisChannelOptions.Equals(DotNop.Channels.Redis.RedisChannelOptions? other) -> bool
+virtual DotNop.Channels.Redis.RedisChannelReaderOptions.<Clone>$() -> DotNop.Channels.Redis.RedisChannelReaderOptions!
+virtual DotNop.Channels.Redis.RedisChannelReaderOptions.EqualityContract.get -> System.Type!
+virtual DotNop.Channels.Redis.RedisChannelReaderOptions.Equals(DotNop.Channels.Redis.RedisChannelReaderOptions? other) -> bool
+virtual DotNop.Channels.Redis.RedisChannelReaderOptions.PrintMembers(System.Text.StringBuilder! builder) -> bool
