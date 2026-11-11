@@ -52,14 +52,17 @@ git push origin main v1.0.12-preview
    git switch main
    dotnet nbgv prepare-release
    # v1.0 branch -> "version": "1.0"
-   # main        -> "version": "1.1-alpha"
+   # main        -> "version": "1.1-preview" (firstUnstableTag in version.json), then v1.0 is merged back into main
    ```
 
-   Options:
-   - `dotnet nbgv prepare-release rc` makes the release branch `1.0-rc` for a release candidate first.
-   - `--nextVersion 2.0` changes the version `main` moves to.
-   - To keep `-preview` instead of `-alpha` on `main`, set `"release": { "firstUnstableTag": "preview" }` in
-     `version.json`.
+   `--nextVersion 2.0` changes the version `main` moves to. Release candidates (`prepare-release rc`) are not used;
+   pre-releases are the `-preview` builds from `main`.
+
+   On the release branch `dotnet nbgv get-version` shows a `-g<sha>` suffix because branch builds are not public
+   releases; the tag build drops it.
+
+   The changelog section for a stable release covers everything since the previous stable release, not only since the
+   last preview.
 
 2. Update the changelog on the release branch, tag it and push everything:
 
@@ -78,6 +81,9 @@ git push origin main v1.0.12-preview
    ```xml
    <PackageValidationBaselineVersion>1.0.13</PackageValidationBaselineVersion>
    ```
+
+   Validation downloads the baseline from nuget.org, so do this only once the version can be restored (indexing can
+   take 10+ minutes); committing it earlier breaks restore on `main`.
 
 ## Patch release
 

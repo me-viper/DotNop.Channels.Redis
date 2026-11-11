@@ -1,7 +1,7 @@
 ---
 name: publish-release
 description: Release DotNop.Channels.Redis to nuget.org — a pre-release from main, a stable release (cuts a vX.Y branch), or a patch release on an existing release branch — by updating CHANGELOG.md, creating and pushing an NBGV version tag that triggers the CI publish job, and creating the GitHub release. Use when the user asks to release, publish, ship or tag a version of the package.
-argument-hint: "[preview | stable [rc] | patch vX.Y]"
+argument-hint: "[preview | stable | patch vX.Y]"
 ---
 
 # Publish a release
@@ -17,11 +17,13 @@ confirmation of the exact version in this conversation.
 
 From the argument, or ask if missing:
 
-| Kind          | Branch tagged                   | Example version          |
-|---------------|---------------------------------|--------------------------|
-| `preview`     | `main`                          | `1.0.12-preview`         |
-| `stable [rc]` | new `vX.Y` branch cut from main | `1.0.13` / `1.0.13-rc`   |
-| `patch vX.Y`  | existing `vX.Y` release branch  | `1.0.14`                 |
+| Kind         | Branch tagged                   | Example version  |
+|--------------|---------------------------------|------------------|
+| `preview`    | `main`                          | `1.0.12-preview` |
+| `stable`     | new `vX.Y` branch cut from main | `1.0.13`         |
+| `patch vX.Y` | existing `vX.Y` release branch  | `1.0.14`         |
+
+Release candidates (`prepare-release rc`) are not used: pre-releases are `-preview` builds from `main`.
 
 ## 2. Preflight — stop and report if any check fails
 
@@ -43,9 +45,12 @@ Run `dotnet tool restore` first, then:
 - **preview**: `git switch main`. Nothing else.
 - **stable**: on `main`, first check `src/DotNop.Channels.Redis/PublicAPI.Unshipped.txt`. If it has entries besides
   `#nullable enable`, offer to move them into `PublicAPI.Shipped.txt` (sorted, keeping the `#nullable enable` header in
-  both) and commit that as `chore: ship public API` before continuing. Then run `dotnet nbgv prepare-release` (or `dotnet nbgv prepare-release rc`). This creates the
-  `vX.Y` branch with the prerelease suffix removed and commits a version bump on `main` (to `X.(Y+1)-alpha` by default;
-  pass `--nextVersion <ver>` if the user wants another one). Show both `version.json` changes, then `git switch vX.Y`.
+  both) and commit that as `chore: ship public API` before continuing. Note the `main` SHA (`git rev-parse HEAD`) for
+  undoing, then run `dotnet nbgv prepare-release`. This creates the `vX.Y` branch
+  with the prerelease suffix removed (one commit), and on `main` commits a version bump to `X.(Y+1)-preview`
+  (`firstUnstableTag` in `version.json`; pass `--nextVersion <ver>` for another one) and then merges `vX.Y` back.
+  It also rewrites `version.json`, dropping properties equal to NBGV defaults — harmless. Show both `version.json`
+  changes, then `git switch vX.Y`.
 - **patch**: `git switch vX.Y`. If the user named commits to include, `git cherry-pick` them and report conflicts
   instead of resolving them silently.
 
@@ -55,9 +60,11 @@ Run `dotnet tool restore` first, then:
 create it with the standard header (`# Changelog` plus one line linking Keep a Changelog and stating that versions
 follow NBGV/SemVer); do not backfill older releases.
 
-1. Collect changes since the previous release tag reachable from the branch being tagged:
-   `git describe --tags --abbrev=0 --match "v*"` (none → the whole history), then
-   `git log <prev-tag>..HEAD --no-merges --format="%h %s%n%b"`.
+1. Collect changes since the previous release of the same kind reachable from the branch being tagged — for a preview
+   any `v*` tag (`git describe --tags --abbrev=0 --match "v*"`), for stable and patch the previous **stable** tag
+   (`--exclude "v*-*"`), so a stable entry covers everything since the last stable, not just since the last preview
+   (none → the whole history; for the first stable release write it as the initial release, summarizing the
+   features). Then `git log <prev-tag>..HEAD --no-merges --format="%h %s%n%b"`.
 2. Map conventional commits to sections, rewritten as short user-facing sentences (not raw commit subjects):
    `feat` → **Added**, `fix` → **Fixed**, `perf`/`refactor` with visible effect → **Changed**, removals →
    **Removed**, and anything marked `!` or `BREAKING CHANGE:` → **Changed** prefixed with `**Breaking:**`. Skip
@@ -68,7 +75,8 @@ follow NBGV/SemVer); do not backfill older releases.
    `## [Unreleased]` content into it.
 4. Commit on the branch being tagged as `docs: update changelog for v<version>`. The commit raises the git height, so
    the version usually grows by one: predict it as the current patch + 1, commit, then re-run
-   `dotnet nbgv get-version -v NuGetPackageVersion`. If it differs, fix the heading and link and
+   `dotnet nbgv get-version -v NuGetPackageVersion`. On a `vX.Y` branch it prints a `-g<sha>` suffix (branch builds
+   are not public; the tag drops it) — compare only the number. If it differs, fix the heading and link and
    `git commit --amend --no-edit` (amending does not change the height) until they match.
 5. stable / patch: also `git cherry-pick` that commit onto `main` so its changelog stays complete (report conflicts
    instead of resolving them silently), then `git switch` back to the branch being tagged.
@@ -79,7 +87,8 @@ follow NBGV/SemVer); do not backfill older releases.
    will be pushed; mention that a GitHub release will be created after the package is published. Ask for confirmation
    (AskUserQuestion). Stop here if they decline and tell them how to undo locally instead of doing it unasked: drop the
    changelog commit(s) (`git reset --hard HEAD~1` on each branch that got one), and for stable also undo
-   `prepare-release` (`git branch -D vX.Y` and `git reset --hard HEAD~1` on `main`).
+   `prepare-release` (`git branch -D vX.Y` and `git reset --hard <main SHA noted before prepare-release>` on `main`,
+   which removes the bump, the merge and the cherry-picked changelog at once).
 2. `dotnet nbgv tag` — it prints the tag name (`v<version>`).
 3. Push in one command, branches before the tag:
    - preview: `git push origin main <tag>`
@@ -96,9 +105,6 @@ follow NBGV/SemVer); do not backfill older releases.
    `nuget`); a version that already exists (`--skip-duplicate` makes that a no-op, not an error).
 4. On success, give the package URL `https://www.nuget.org/packages/DotNop.Channels.Redis/<version>` and note indexing
    can take several minutes.
-5. After the first stable release of a major version, offer to set `<PackageValidationBaselineVersion>` in
-   `src/DotNop.Channels.Redis/DotNop.Channels.Redis.csproj` to that version (commit on `main`).
-
 ## 7. Create the GitHub release
 
 Only after the `publish` job succeeded, so the release never points to a package that is not on nuget.org. If it
@@ -106,10 +112,19 @@ failed, ask the user whether to create the release anyway.
 
 1. Write the release notes to a file in the scratchpad: the body of the version's `CHANGELOG.md` section (without its
    `## [...]` heading), then a line `**NuGet:** https://www.nuget.org/packages/DotNop.Channels.Redis/<version>`.
-2. Create the release, with `--prerelease` when the version has a suffix (`-preview`, `-rc`, ...):
-   `gh release create <tag> --verify-tag --title <tag> --notes-file <notes> [--prerelease]`.
-   For a stable release also pass `--latest`.
+2. Create the release, with `--prerelease` for a `-preview` version and `--latest` for a stable or patch one:
+   `gh release create <tag> --verify-tag --title <tag> --notes-file <notes> --prerelease|--latest`.
 3. Give the user the release URL that `gh` prints.
+
+## 8. Wrap up
+
+1. Switch the checkout back to `main` (stable and patch releases leave it on `vX.Y`).
+2. After the first stable release of a major version, offer to set `<PackageValidationBaselineVersion>` in
+   `src/DotNop.Channels.Redis/DotNop.Channels.Redis.csproj` to that version (commit on `main`). Package validation
+   restores the baseline from nuget.org, so wait until the version is downloadable
+   (`https://api.nuget.org/v3-flatcontainer/dotnop.channels.redis/<version>/dotnop.channels.redis.nuspec` returns 200;
+   poll in the background, it can take 10+ minutes), then verify with a Release `dotnet pack` before committing —
+   committing earlier breaks restore on `main`.
 
 Never delete a pushed tag or unlist a package on your own; if something went wrong, explain the options from the
 "Mistakes" section of `RELEASING.md` and let the user decide.
