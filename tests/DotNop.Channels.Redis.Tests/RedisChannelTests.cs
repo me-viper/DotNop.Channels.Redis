@@ -23,13 +23,13 @@ public class RedisChannelTests(ITestOutputHelper output) : IAsyncLifetime
     {
         _cnn = await ConnectionMultiplexer.ConnectAsync("localhost:6379");
         _cnn.GetDatabase().KeyDelete(ChannelName);
-        _cnn.GetDatabase().KeyDelete(RedisChannelUtils.EofChannel(ChannelName));
+        _cnn.GetDatabase().KeyDelete(RedisChannelUtils.CompletionKey(ChannelName));
     }
 
     public ValueTask DisposeAsync()
     {
         _cnn.GetDatabase().KeyDelete(ChannelName);
-        _cnn.GetDatabase().KeyDelete(RedisChannelUtils.EofChannel(ChannelName));
+        _cnn.GetDatabase().KeyDelete(RedisChannelUtils.CompletionKey(ChannelName));
 
         return ValueTask.CompletedTask;
     }
@@ -460,12 +460,12 @@ public class RedisChannelTests(ITestOutputHelper output) : IAsyncLifetime
         Assert.True(r2);
 
         Assert.True(db.KeyExists(ChannelName));
-        Assert.True(db.KeyExists(RedisChannelUtils.EofChannel(ChannelName)));
+        Assert.True(db.KeyExists(RedisChannelUtils.CompletionKey(ChannelName)));
 
         await Task.Delay(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         Assert.False(db.KeyExists(ChannelName));
-        Assert.False(db.KeyExists(RedisChannelUtils.EofChannel(ChannelName)));
+        Assert.False(db.KeyExists(RedisChannelUtils.CompletionKey(ChannelName)));
     }
 
     [Fact]
@@ -489,12 +489,12 @@ public class RedisChannelTests(ITestOutputHelper output) : IAsyncLifetime
         Assert.True(r2);
 
         Assert.True(db.KeyExists(ChannelName));
-        Assert.True(db.KeyExists(RedisChannelUtils.EofChannel(ChannelName)));
+        Assert.True(db.KeyExists(RedisChannelUtils.CompletionKey(ChannelName)));
 
         await Task.Delay(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         Assert.False(db.KeyExists(ChannelName));
-        Assert.False(db.KeyExists(RedisChannelUtils.EofChannel(ChannelName)));
+        Assert.False(db.KeyExists(RedisChannelUtils.CompletionKey(ChannelName)));
     }
 
     [Fact]

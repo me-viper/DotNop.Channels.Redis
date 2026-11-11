@@ -12,9 +12,21 @@ namespace DotNop.Channels.Redis;
 [PublicAPI]
 public sealed class RedisChannelWriter<T> : ChannelWriter<T>, IDisposable
 {
+    /// <summary>Returned by the push scripts when the channel is already completed.</summary>
+    private const long PushClosed = -1;
+
+    /// <summary>Pushes the item unless the channel is completed.</summary>
+    private static readonly LuaScript PushUnbounded = LuaScript.Prepare(
+        """
+        if redis.call('EXISTS', @done) == 1 then return -1 end
+        return redis.call('RPUSH', @key, @v)
+        """
+        );
+
     /// <summary>Pushes the item only if the list has room; returns 0 when full.</summary>
     private static readonly LuaScript PushIfNotFull = LuaScript.Prepare(
         """
+        if redis.call('EXISTS', @done) == 1 then return -1 end
         if redis.call('LLEN', @key) >= tonumber(@cap) then return 0 end
         return redis.call('RPUSH', @key, @v)
         """
@@ -23,6 +35,7 @@ public sealed class RedisChannelWriter<T> : ChannelWriter<T>, IDisposable
     /// <summary>Removes the newest items to make room, then pushes.</summary>
     private static readonly LuaScript PushDropNewest = LuaScript.Prepare(
         """
+        if redis.call('EXISTS', @done) == 1 then return -1 end
         local cap = tonumber(@cap)
         if redis.call('LLEN', @key) >= cap then
             if cap == 1 then redis.call('DEL', @key) else redis.call('LTRIM', @key, 0, cap - 2) end
@@ -34,6 +47,7 @@ public sealed class RedisChannelWriter<T> : ChannelWriter<T>, IDisposable
     /// <summary>Pushes, then removes the oldest items beyond capacity.</summary>
     private static readonly LuaScript PushDropOldest = LuaScript.Prepare(
         """
+        if redis.call('EXISTS', @done) == 1 then return -1 end
         local cap = tonumber(@cap)
         local llen = redis.call('RPUSH', @key, @v)
         if llen > cap then redis.call('LTRIM', @key, -cap, -1) end
@@ -81,16 +95,13 @@ public sealed class RedisChannelWriter<T> : ChannelWriter<T>, IDisposable
 
                 if (string.Equals(p.Message, RedisChannelUtils.CloseChannel, StringComparison.Ordinal))
                 {
-                    TryComplete(false);
+                    SyncCompletion();
                     _writerSync.Set();
                 }
             }
             );
 
-        var eof = _db.StringGet(RedisChannelUtils.EofChannel(_channel));
-
-        if (!eof.IsNull)
-            _doneWriting = eof.IsNullOrEmpty ? RedisChannelUtils.DoneWritingException : new ChannelClosedException(eof);
+        _doneWriting = RedisChannelUtils.ToCompletion(_db.StringGet(RedisChannelUtils.CompletionKey(_channel)));
     }
 
     private async Task<bool> FullCapacityAsync()
@@ -101,10 +112,33 @@ public sealed class RedisChannelWriter<T> : ChannelWriter<T>, IDisposable
         return await _db.ListLengthAsync(_channel).ConfigureAwait(false) >= _opts.Capacity;
     }
 
+    /// <summary>Runs a push script; returns the list length, 0 when full or <see cref="PushClosed" />.</summary>
     private long Push(LuaScript script, RedisValue msg)
     {
-        var result = _db.ScriptEvaluate(script, new { key = (RedisKey)_channel, v = msg, cap = _opts.Capacity });
+        var result = _db.ScriptEvaluate(
+            script,
+            new
+            {
+                key = (RedisKey)_channel,
+                done = RedisChannelUtils.CompletionKey(_channel),
+                v = msg,
+                cap = _opts.Capacity,
+            }
+            );
+
         return result.IsNull ? 0 : (long)result;
+    }
+
+    /// <summary>Adopts the completion state stored in Redis by another writer, if any.</summary>
+    private void SyncCompletion()
+    {
+        if (_doneWriting != null)
+            return;
+
+        var doneWriting = RedisChannelUtils.ToCompletion(_db.StringGet(RedisChannelUtils.CompletionKey(_channel)));
+
+        if (doneWriting != null)
+            _doneWriting = doneWriting;
     }
 
     private void Notify()
@@ -114,7 +148,7 @@ public sealed class RedisChannelWriter<T> : ChannelWriter<T>, IDisposable
         if (_opts.ChannelSlidingExpiration != TimeSpan.Zero)
         {
             _db.KeyExpire(_channel, _opts.ChannelSlidingExpiration, CommandFlags.FireAndForget);
-            _db.KeyExpire(RedisChannelUtils.EofChannel(_channel), _opts.ChannelSlidingExpiration, CommandFlags.FireAndForget);
+            _db.KeyExpire(RedisChannelUtils.CompletionKey(_channel), _opts.ChannelSlidingExpiration, CommandFlags.FireAndForget);
         }
     }
 
@@ -129,33 +163,28 @@ public sealed class RedisChannelWriter<T> : ChannelWriter<T>, IDisposable
 
         var msg = _serializer.WriteRedisValue(item);
 
-        if (!_opts.HasCapacity)
-            _db.ListRightPush(_channel, msg);
-        else
-        {
-            switch (_opts.FullMode)
+        var script = !_opts.HasCapacity
+            ? PushUnbounded
+            : _opts.FullMode switch
             {
-                case BoundedChannelFullMode.Wait:
-                    if (Push(PushIfNotFull, msg) == 0)
-                        return false;
+                BoundedChannelFullMode.Wait or BoundedChannelFullMode.DropWrite => PushIfNotFull,
+                BoundedChannelFullMode.DropNewest => PushDropNewest,
+                BoundedChannelFullMode.DropOldest => PushDropOldest,
+                _ => throw new InvalidOperationException($"Unsupported full mode: {_opts.FullMode}"),
+            };
 
-                    break;
-                case BoundedChannelFullMode.DropWrite:
-                    // Channel is full: the item is dropped, but the write is reported as successful.
-                    if (Push(PushIfNotFull, msg) == 0)
-                        return true;
+        var pushed = Push(script, msg);
 
-                    break;
-                case BoundedChannelFullMode.DropNewest:
-                    Push(PushDropNewest, msg);
-                    break;
-                case BoundedChannelFullMode.DropOldest:
-                    Push(PushDropOldest, msg);
-                    break;
-                default:
-                    throw new InvalidOperationException($"Unsupported full mode: {_opts.FullMode}");
-            }
+        if (pushed == PushClosed)
+        {
+            // Completed by another writer whose close notification has not arrived yet.
+            SyncCompletion();
+            return false;
         }
+
+        // Channel is full: Wait reports failure, DropWrite drops the item but reports success.
+        if (pushed == 0)
+            return _opts.FullMode == BoundedChannelFullMode.DropWrite;
 
         Metrics.MessageWritten(_channel);
         Notify();
@@ -198,45 +227,37 @@ public sealed class RedisChannelWriter<T> : ChannelWriter<T>, IDisposable
         return true;
     }
 
-    private bool TryComplete(bool initiator, string? error = null)
+    /// <inheritdoc />
+    public override bool TryComplete(Exception? error = null)
     {
         if (_doneWriting != null)
-            return true;
+            return false;
 
-        var errMsg = error ?? string.Empty;
+        var errMsg = error?.Message ?? string.Empty;
 
-        if (!initiator)
+        var expiration = _opts.ExpireAfterCompletion != TimeSpan.Zero
+            ? _opts.ExpireAfterCompletion
+            : _opts.ChannelSlidingExpiration;
+
+        // Only the first completer across all instances wins.
+        if (!_db.StringSet(
+            RedisChannelUtils.CompletionKey(_channel),
+            errMsg,
+            expiration == TimeSpan.Zero ? null : expiration,
+            When.NotExists
+            ))
         {
-            var err = _db.StringGet(RedisChannelUtils.EofChannel(_channel));
-
-            if (!err.IsNull)
-                errMsg = err;
-        }
-        else
-        {
-            if (!_db.StringSet(RedisChannelUtils.EofChannel(_channel), errMsg))
-                return false;
-
-            _sub.Publish(RedisChannelUtils.PubSubChannel(_channel), RedisChannelUtils.CloseChannel);
-
-            var expiration = _opts.ExpireAfterCompletion != TimeSpan.Zero
-                ? _opts.ExpireAfterCompletion
-                : _opts.ChannelSlidingExpiration;
-
-            if (expiration != TimeSpan.Zero)
-            {
-                _db.KeyExpire(_channel, expiration, CommandFlags.FireAndForget);
-                _db.KeyExpire(RedisChannelUtils.EofChannel(_channel), expiration, CommandFlags.FireAndForget);
-            }
+            SyncCompletion();
+            return false;
         }
 
-        _doneWriting = string.IsNullOrWhiteSpace(errMsg)
-            ? RedisChannelUtils.DoneWritingException
-            : new ChannelClosedException(errMsg);
+        _doneWriting = RedisChannelUtils.ToCompletion(errMsg);
+
+        _sub.Publish(RedisChannelUtils.PubSubChannel(_channel), RedisChannelUtils.CloseChannel);
+
+        if (expiration != TimeSpan.Zero)
+            _db.KeyExpire(_channel, expiration, CommandFlags.FireAndForget);
 
         return true;
     }
-
-    /// <inheritdoc />
-    public override bool TryComplete(Exception? error = null) => TryComplete(true, error?.Message);
 }

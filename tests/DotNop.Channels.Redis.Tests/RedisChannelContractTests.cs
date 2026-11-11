@@ -16,12 +16,12 @@ public sealed class RedisChannelContractTests : IAsyncLifetime
     public async ValueTask InitializeAsync()
     {
         _cnn = await ConnectionMultiplexer.ConnectAsync("localhost:6379");
-        await Db.KeyDeleteAsync([Name, RedisChannelUtils.EofChannel(Name)]);
+        await Db.KeyDeleteAsync([Name, RedisChannelUtils.CompletionKey(Name)]);
     }
 
     public async ValueTask DisposeAsync()
     {
-        await Db.KeyDeleteAsync([Name, RedisChannelUtils.EofChannel(Name)]);
+        await Db.KeyDeleteAsync([Name, RedisChannelUtils.CompletionKey(Name)]);
         await _cnn.DisposeAsync();
     }
 
@@ -183,5 +183,54 @@ public sealed class RedisChannelContractTests : IAsyncLifetime
 
         var ex = Record.Exception(() => r.TryRead(out _));
         Assert.Null(ex);
+    }
+
+    [Theory]
+    [InlineData(-1, BoundedChannelFullMode.Wait)]
+    [InlineData(5, BoundedChannelFullMode.Wait)]
+    [InlineData(5, BoundedChannelFullMode.DropWrite)]
+    [InlineData(5, BoundedChannelFullMode.DropNewest)]
+    [InlineData(5, BoundedChannelFullMode.DropOldest)]
+    public void TryWrite_FailsRightAfterAnotherWriterCompletes(int capacity, BoundedChannelFullMode mode)
+    {
+        var opts = new RedisChannelOptions(capacity) { FullMode = mode };
+        using var w1 = W(opts);
+        using var w2 = W(opts);
+
+        Assert.True(w2.TryWrite("a"));
+        Assert.True(w1.TryComplete());
+
+        // No wait for the close notification: the push script checks the completion key itself.
+        Assert.False(w2.TryWrite("b"));
+        Assert.Equal(1, Db.ListLength(Name));
+    }
+
+    [Fact]
+    public async Task TryComplete_OnlyFirstCompleterWins()
+    {
+        using var w1 = W();
+        using var w2 = W();
+
+        Assert.True(w1.TryComplete(new InvalidOperationException("first")));
+        Assert.False(w2.TryComplete(new InvalidOperationException("second")));
+        Assert.False(w1.TryComplete());
+
+        var ex = await Assert.ThrowsAsync<ChannelClosedException>(async () =>
+                await w2.WaitToWriteAsync(TestContext.Current.CancellationToken)
+            );
+
+        Assert.Equal("first", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("orders", "{orders}.eof")]
+    [InlineData("orders{eu}", "orders{eu}.eof")]
+    [InlineData("{eu}orders", "{eu}orders.eof")]
+    public void CompletionKey_SharesHashSlotWithListKey(string channel, string expected)
+    {
+        var key = RedisChannelUtils.CompletionKey(channel);
+
+        Assert.Equal(expected, key.ToString());
+        Assert.Equal(_cnn.HashSlot(channel), _cnn.HashSlot(key));
     }
 }

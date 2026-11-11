@@ -75,12 +75,12 @@ public sealed class RedisChannelReader<T> : ChannelReader<T>, IDisposable
 
     private void CheckIfClosed()
     {
-        var eof = _db.StringGet(RedisChannelUtils.EofChannel(_channel));
+        var doneWriting = RedisChannelUtils.ToCompletion(_db.StringGet(RedisChannelUtils.CompletionKey(_channel)));
 
-        if (eof.IsNull)
+        if (doneWriting == null)
             return;
 
-        _doneWriting = eof.IsNullOrEmpty ? RedisChannelUtils.DoneWritingException : new ChannelClosedException(eof);
+        _doneWriting = doneWriting;
 
         if (_db.ListLength(_channel) == 0)
             CompleteReader();
@@ -107,7 +107,7 @@ public sealed class RedisChannelReader<T> : ChannelReader<T>, IDisposable
         if (_opts.ChannelSlidingExpiration != TimeSpan.Zero)
         {
             _db.KeyExpire(_channel, _opts.ChannelSlidingExpiration, CommandFlags.FireAndForget);
-            _db.KeyExpire(RedisChannelUtils.EofChannel(_channel), _opts.ChannelSlidingExpiration, CommandFlags.FireAndForget);
+            _db.KeyExpire(RedisChannelUtils.CompletionKey(_channel), _opts.ChannelSlidingExpiration, CommandFlags.FireAndForget);
         }
     }
 

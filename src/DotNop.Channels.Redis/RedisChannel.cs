@@ -35,6 +35,6 @@ public sealed class RedisChannel<T> : Channel<T>, IDisposable
     public void Reset()
     {
         _db.KeyDelete(_channel);
-        _db.KeyDelete(RedisChannelUtils.EofChannel(_channel));
+        _db.KeyDelete(RedisChannelUtils.CompletionKey(_channel));
     }
 }

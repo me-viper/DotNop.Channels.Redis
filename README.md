@@ -78,7 +78,11 @@ The reader and writer follow the `System.Threading.Channels` contract:
 - `Reader.Completion` finishes when the channel is completed and drained (or its keys expired through
   `ChannelSlidingExpiration`), and is faulted when the channel was completed with an error.
 - Completion is shared through Redis: completing any writer closes the channel for all readers and writers of that
-  channel, including ones created later.
+  channel, including ones created later. Writes are checked against completion atomically, so no writer can add items
+  after the channel is completed, and only the first `TryComplete` across all writers returns `true`.
+- The channel uses two keys: the list `<name>` and the completion marker `{<name>}.eof`, kept in one Redis Cluster slot
+  by the hash tag. A name that already has a hash tag keeps its own (`orders{eu}` → `orders{eu}.eof`). Avoid other
+  uses of `{`/`}` in names (such as `a{}b`) on a cluster: there the two keys can land in different slots.
 - `null` items are allowed if the serializer supports them.
 - Many readers and writers may share one `IConnectionMultiplexer`; disposing one removes only its own subscription.
 
