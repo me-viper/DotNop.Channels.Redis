@@ -122,8 +122,11 @@ value can lag by one collection interval, and a channel is omitted while Redis i
 ## Building
 
 ```shell
-dotnet test --solution DotNop.Channels.Redis.slnx   # requires Redis on 127.0.0.1:6379 (or set REDIS_CONNECTION); tests are skipped without it
-dotnet pack src/DotNop.Channels.Redis.csproj -c Release   # package goes to artifacts/package/release
+# requires Redis on 127.0.0.1:6379 (or set REDIS_CONNECTION); tests are skipped without it
+dotnet test --solution DotNop.Channels.Redis.slnx
+
+# package goes to artifacts/package/release
+dotnet pack src/DotNop.Channels.Redis.csproj -c Release
 ```
 
 Versions come from Nerdbank.GitVersioning (`version.json`). Packages are published to nuget.org from `v*` tags; see
