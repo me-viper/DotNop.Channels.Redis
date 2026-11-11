@@ -26,6 +26,8 @@ public sealed class RedisChannelReader<T> : ChannelReader<T>, IDisposable
 
     private readonly ChannelMessageQueue _subscription;
 
+    private readonly QueueProbe _queueProbe;
+
     private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private volatile Exception? _doneWriting;
@@ -68,7 +70,8 @@ public sealed class RedisChannelReader<T> : ChannelReader<T>, IDisposable
             }
             );
 
-        Metrics.RegisterQueue(this, _channel, () => _db.ListLength(_channel));
+        _queueProbe = new QueueProbe(_channel, _db.Database, () => _db.ListLengthAsync(_channel));
+        Metrics.RegisterQueue(_queueProbe);
 
         CheckIfClosed();
     }
@@ -114,7 +117,8 @@ public sealed class RedisChannelReader<T> : ChannelReader<T>, IDisposable
     /// <inheritdoc />
     public void Dispose()
     {
-        Metrics.UnregisterQueue(this);
+        Metrics.UnregisterQueue(_queueProbe);
+        _queueProbe.Dispose();
         _subscription.Unsubscribe();
     }
 
@@ -159,8 +163,12 @@ public sealed class RedisChannelReader<T> : ChannelReader<T>, IDisposable
     {
         var sw = new Stopwatch();
 
-        while (await _db.ListLengthAsync(_channel).ConfigureAwait(false) == 0)
+        long length;
+
+        while ((length = await _db.ListLengthAsync(_channel).ConfigureAwait(false)) == 0)
         {
+            _queueProbe.Set(0);
+
             sw.Start();
 
             var doneWriting = _doneWriting;
@@ -191,6 +199,8 @@ public sealed class RedisChannelReader<T> : ChannelReader<T>, IDisposable
                 return false;
             }
         }
+
+        _queueProbe.Set(length);
 
         if (sw.IsRunning)
             Metrics.ReadWaited(_channel, sw.Elapsed);

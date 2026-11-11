@@ -97,16 +97,18 @@ The reader and writer follow the `System.Threading.Channels` contract:
 
 The `DotNop.Channels.Redis` meter publishes:
 
-| Instrument                           | Type      | Description                                  |
-|--------------------------------------|-----------|----------------------------------------------|
-| `dotnop.channels.redis.write.count`  | Counter   | Messages written.                            |
-| `dotnop.channels.redis.read.count`   | Counter   | Messages read.                               |
-| `dotnop.channels.redis.write.waited` | Histogram | Seconds a writer waited for room.            |
-| `dotnop.channels.redis.read.waited`  | Histogram | Seconds a reader waited for a message.       |
-| `dotnop.channels.redis.queue.count`  | Gauge     | Messages in each channel with a live reader. |
+| Instrument                                  | Type      | Unit        | Description                                  |
+|---------------------------------------------|-----------|-------------|----------------------------------------------|
+| `dotnop.channels.redis.written.messages`    | Counter   | `{message}` | Messages written.                            |
+| `dotnop.channels.redis.read.messages`       | Counter   | `{message}` | Messages read.                               |
+| `dotnop.channels.redis.write.wait.duration` | Histogram | `s`         | Time a writer waited for room.               |
+| `dotnop.channels.redis.read.wait.duration`  | Histogram | `s`         | Time a reader waited for a message.          |
+| `dotnop.channels.redis.queue.length`        | Gauge     | `{message}` | Messages in each channel with a live reader. |
 
-All instruments carry a `channel` tag. The gauge reports each channel once, however many readers it has, and stops
-reporting a reader once it is disposed.
+All instruments carry a `channel` tag; the gauge also carries `db.namespace` (the Redis database index). The gauge
+reports each channel and database once, however many readers it has, and stops reporting a reader once it is disposed.
+It never queries Redis during collection: it reports the last known length and refreshes it in the background, so a
+value can lag by one collection interval, and a channel is omitted while Redis is unreachable.
 
 ## Building
 
