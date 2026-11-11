@@ -20,6 +20,8 @@ dotnet tool restore; dotnet nbgv get-version                          # version 
   not `--filter`.
 - Tests need a real Redis at `127.0.0.1:6379` (override with `REDIS_CONNECTION`). Without it every test is **skipped**,
   not failed — a green run with all tests skipped proves nothing. CI runs a `redis:8-alpine` service.
+- `WaitMode_ManyWritersNeverExceedCapacity` is `Explicit` (it starves the thread pool on small CI runners); run it with
+  `--explicit on` after changing the writer's Lua scripts or capacity logic.
 - `Release` builds use `TreatWarningsAsErrors`, and code style is enforced in build (`EnforceCodeStyleInBuild`).
 
 ## Architecture
