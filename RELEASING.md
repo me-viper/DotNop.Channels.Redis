@@ -18,6 +18,17 @@ The `nbgv` CLI is a local tool: run `dotnet tool restore` once, then use `dotnet
 - **GitHub** (optional): Settings → Environments → `nuget` → add required reviewers to approve every publish manually.
   The environment is created automatically on the first run if it does not exist.
 
+## Changelog
+
+Every release adds a section to [`CHANGELOG.md`](CHANGELOG.md) ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+format) on the branch being tagged, committed as `docs: update changelog for v<version>` right before tagging. Write
+it from the conventional commits since the previous tag (`feat` → Added, `fix` → Fixed, breaking changes called out
+under Changed; skip `test`/`ci`/`build`/`chore` and internal-only `docs`).
+
+The changelog commit raises the git height, so the version grows by one: commit it, then check
+`dotnet nbgv get-version -v NuGetPackageVersion` and, if the heading is off, fix it with `git commit --amend` (amending
+does not change the height). For stable and patch releases cherry-pick the commit onto `main` as well.
+
 ## Pre-release from `main`
 
 `main` carries the prerelease suffix from `version.json` (e.g. `1.0-preview`).
@@ -25,9 +36,12 @@ The `nbgv` CLI is a local tool: run `dotnet tool restore` once, then use `dotnet
 ```shell
 git switch main
 git pull
+dotnet nbgv get-version -v NuGetPackageVersion   # current version, e.g. 1.0.11-preview
+# add the 1.0.12-preview section to CHANGELOG.md, then:
+git commit -am "docs: update changelog for v1.0.12-preview"
 dotnet nbgv get-version -v NuGetPackageVersion   # check what will be published, e.g. 1.0.12-preview
 dotnet nbgv tag                                  # creates tag v1.0.12-preview on HEAD
-git push origin v1.0.12-preview
+git push origin main v1.0.12-preview
 ```
 
 ## Stable release
@@ -47,10 +61,13 @@ git push origin v1.0.12-preview
    - To keep `-preview` instead of `-alpha` on `main`, set `"release": { "firstUnstableTag": "preview" }` in
      `version.json`.
 
-2. Tag the release branch and push everything:
+2. Update the changelog on the release branch, tag it and push everything:
 
    ```shell
    git switch v1.0
+   # add the 1.0.13 section to CHANGELOG.md, then:
+   git commit -am "docs: update changelog for v1.0.13"
+   git switch main && git cherry-pick v1.0 && git switch v1.0
    dotnet nbgv tag                                  # e.g. v1.0.13
    git push origin main v1.0 v1.0.13
    ```
@@ -69,8 +86,11 @@ Fix on (or cherry-pick to) the release branch, then tag it again:
 ```shell
 git switch v1.0
 git cherry-pick <commit>
+# add the 1.0.14 section to CHANGELOG.md, then:
+git commit -am "docs: update changelog for v1.0.14"
+git switch main && git cherry-pick v1.0 && git switch v1.0
 dotnet nbgv tag                                  # e.g. v1.0.14
-git push origin v1.0 v1.0.14
+git push origin main v1.0 v1.0.14
 ```
 
 ## After pushing a tag
@@ -79,6 +99,12 @@ git push origin v1.0 v1.0.14
   `publish` job.
 - nuget.org validates and indexes the package; it can take several minutes to appear in search and restore.
 - The push uses `--skip-duplicate`, so re-running the workflow for an already published version is harmless.
+- Once the `publish` job succeeded, create the GitHub release from the tag, with the changelog section and a link to
+  the nuget.org package as notes (`--prerelease` for suffixed versions):
+
+  ```shell
+  gh release create v1.0.13 --verify-tag --title v1.0.13 --notes-file notes.md
+  ```
 
 ## Mistakes
 
