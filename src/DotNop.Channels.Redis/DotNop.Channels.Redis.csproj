@@ -8,6 +8,7 @@
     <Description>System.Threading.Channels implementation backed by Redis.</Description>
     <PackageTags>redis;channels;</PackageTags>
     <EnablePackageValidation>true</EnablePackageValidation>
+    <PackageValidationBaselineVersion>1.0.26</PackageValidationBaselineVersion>
   </PropertyGroup>
 
   <ItemGroup>
