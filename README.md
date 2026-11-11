@@ -20,6 +20,8 @@ using DotNop.Channels.Redis;
 
 using StackExchange.Redis;
 
+var cancellationToken = CancellationToken.None;
+
 await using var cnn = await ConnectionMultiplexer.ConnectAsync("localhost:6379");
 var db = cnn.GetDatabase();
 
@@ -46,12 +48,16 @@ different processes.
 
 ### Options
 
-| Option                     | Description                                                        |
-|----------------------------|--------------------------------------------------------------------|
-| `Capacity`                 | Maximum number of items; `-1` or omitted means unbounded.          |
-| `FullMode`                 | Behavior of the writer when the channel is full.                   |
-| `ExpireAfterCompletion`    | How long the Redis keys are kept after the writer completes.       |
-| `ChannelSlidingExpiration` | Sliding expiration of the Redis keys, refreshed on read and write. |
+| Option                     | Type                     | Default         | Description                                                        |
+|----------------------------|--------------------------|-----------------|--------------------------------------------------------------------|
+| `Capacity`                 | `int`                    | unbounded       | Maximum number of items; `-1` or omitted means unbounded.          |
+| `FullMode`                 | `BoundedChannelFullMode` | `Wait`          | Behavior of the writer when the channel is full.                   |
+| `ExpireAfterCompletion`    | `TimeSpan`               | `TimeSpan.Zero` | How long the Redis keys are kept after the writer completes.       |
+| `ChannelSlidingExpiration` | `TimeSpan`               | `TimeSpan.Zero` | Sliding expiration of the Redis keys, refreshed on read and write. |
+
+`TimeSpan.Zero` means the keys never expire. When `ExpireAfterCompletion` is not set, completing the channel applies
+`ChannelSlidingExpiration` instead. Readers created on their own take `RedisChannelReaderOptions`, which has only
+`ChannelSlidingExpiration`.
 
 `new RedisChannelOptions(capacity)` throws `ArgumentOutOfRangeException` for `0` or values below `-1`. A writer created
 without options is unbounded.
@@ -115,12 +121,29 @@ value can lag by one collection interval, and a channel is omitted while Redis i
 ## Building
 
 ```shell
-dotnet test    # requires Redis on 127.0.0.1:6379 (or set REDIS_CONNECTION); tests are skipped without it
-dotnet pack -c Release   # package goes to artifacts/package/release
+dotnet test --solution DotNop.Channels.Redis.slnx   # requires Redis on 127.0.0.1:6379 (or set REDIS_CONNECTION); tests are skipped without it
+dotnet pack src/DotNop.Channels.Redis/DotNop.Channels.Redis.csproj -c Release   # package goes to artifacts/package/release
 ```
 
 Versions come from Nerdbank.GitVersioning (`version.json`). Packages are published to nuget.org from `v*` tags; see
 [RELEASING.md](https://github.com/me-viper/DotNop.Channels.Redis/blob/main/RELEASING.md).
+
+## 3rd Party Libraries and Contributions
+
+Runtime dependencies:
+
+- [StackExchange.Redis](https://github.com/StackExchange/StackExchange.Redis) — Redis client (MIT).
+- [DotNext.Threading](https://github.com/dotnet/dotNext) — async synchronization primitives (MIT).
+
+Build and test tooling:
+
+- [Nerdbank.GitVersioning](https://github.com/dotnet/Nerdbank.GitVersioning) — versioning from git (MIT).
+- [JetBrains.Annotations](https://github.com/JetBrains/JetBrains.Annotations) — code annotations (MIT).
+- [Microsoft.CodeAnalysis.PublicApiAnalyzers](https://github.com/dotnet/roslyn-analyzers) — public API tracking (MIT).
+- [xUnit.net](https://github.com/xunit/xunit) — test framework (Apache-2.0).
+- [MartinCostello.Logging.XUnit](https://github.com/martincostello/xunit-logging) — test logging (Apache-2.0).
+
+Contributions are welcome: open an [issue](https://github.com/me-viper/DotNop.Channels.Redis/issues) or a pull request.
 
 ## License
 
