@@ -5,8 +5,8 @@
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageIcon>icon.png</PackageIcon>
-    <Description>System.Threading.Channels implementation backed by Redis: a Channel&lt;T&gt; whose reader and writer can live in different processes.</Description>
-    <PackageTags>redis;channels;channel;queue;system.threading.channels;stackexchange.redis</PackageTags>
+    <Description>System.Threading.Channels implementation backed by Redis.</Description>
+    <PackageTags>redis;channels;</PackageTags>
     <EnablePackageValidation>true</EnablePackageValidation>
   </PropertyGroup>
 
