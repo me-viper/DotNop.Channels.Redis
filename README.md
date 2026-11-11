@@ -119,8 +119,8 @@ dotnet test    # requires Redis on 127.0.0.1:6379 (or set REDIS_CONNECTION); tes
 dotnet pack -c Release   # package goes to artifacts/package/release
 ```
 
-Versions come from Nerdbank.GitVersioning (`version.json`). Stable versions are built from `release/v{version}`
-branches.
+Versions come from Nerdbank.GitVersioning (`version.json`). Packages are published to nuget.org from `v*` tags; see
+[RELEASING.md](https://github.com/me-viper/DotNop.Channels.Redis/blob/main/RELEASING.md).
 
 ## License
 
