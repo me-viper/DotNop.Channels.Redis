@@ -5,6 +5,9 @@
     "^refs/heads/main$",
     "^refs/tags/v\\d+\\.\\d+"
   ],
+  "release": {
+    "firstUnstableTag": "preview"
+  },
   "cloudBuild": {
     "setVersionVariables": true,
     "buildNumber": {
