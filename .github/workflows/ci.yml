@@ -53,8 +53,7 @@ jobs:
         run: dotnet build DotNop.Channels.Redis.slnx -c Release --no-restore
 
       - name: Test
-        # One test module (TFM) at a time: they share one Redis and the runner's few cores.
-        run: dotnet test --solution DotNop.Channels.Redis.slnx -c Release --no-build --max-parallel-test-modules 1
+        run: dotnet test --solution DotNop.Channels.Redis.slnx -c Release --no-build
 
       - name: Pack
         run: dotnet pack src/DotNop.Channels.Redis/DotNop.Channels.Redis.csproj -c Release --no-build -o artifacts/packages
