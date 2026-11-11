@@ -1,4 +1,4 @@
-﻿[*.{cs,vb}]
+[*.{cs,vb}]
 resharper_unused_type_global_highlighting = none
 resharper_class_never_instantiated_global_highlighting = none
 resharper_constructor_call_not_used_highlighting = none

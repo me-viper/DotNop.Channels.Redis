@@ -1,4 +1,4 @@
-﻿#nullable enable
+#nullable enable
 DotNop.Channels.Redis.IRedisValueSerializer<T>
 DotNop.Channels.Redis.IRedisValueSerializer<T>.ReadRedisValue(StackExchange.Redis.RedisValue value) -> T?
 DotNop.Channels.Redis.IRedisValueSerializer<T>.WriteRedisValue(T item) -> StackExchange.Redis.RedisValue

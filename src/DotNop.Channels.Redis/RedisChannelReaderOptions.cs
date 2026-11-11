@@ -1,4 +1,4 @@
-﻿namespace DotNop.Channels.Redis;
+namespace DotNop.Channels.Redis;
 
 [PublicAPI]
 public record RedisChannelReaderOptions
