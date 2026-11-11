@@ -79,10 +79,11 @@ The reader and writer follow the `System.Threading.Channels` contract:
   `ChannelSlidingExpiration`), and is faulted when the channel was completed with an error.
 - Completion is shared through Redis: completing any writer closes the channel for all readers and writers of that
   channel, including ones created later. Writes are checked against completion atomically, so no writer can add items
-  after the channel is completed, and only the first `TryComplete` across all writers returns `true`.
+  after the channel is completed, and only the first `TryComplete` across all writers returns `true`. The error is
+  stored as its message, so completing with an exception whose message is empty counts as a normal completion.
 - The channel uses two keys: the list `<name>` and the completion marker `{<name>}.eof`, kept in one Redis Cluster slot
-  by the hash tag. A name that already has a hash tag keeps its own (`orders{eu}` → `orders{eu}.eof`). Avoid other
-  uses of `{`/`}` in names (such as `a{}b`) on a cluster: there the two keys can land in different slots.
+  by the hash tag. A name that already has a hash tag keeps its own (`orders{eu}` → `orders{eu}.eof`). On a cluster,
+  avoid names that contain `}` but no hash tag (such as `a{}b` or `a}b`): there the two keys land in different slots.
 - `null` items are allowed if the serializer supports them.
 - Many readers and writers may share one `IConnectionMultiplexer`; disposing one removes only its own subscription.
 
@@ -110,7 +111,7 @@ reporting a reader once it is disposed.
 ## Building
 
 ```shell
-dotnet test    # requires Redis on localhost:6379
+dotnet test    # requires Redis on 127.0.0.1:6379 (or set REDIS_CONNECTION); tests are skipped without it
 dotnet pack -c Release   # package goes to artifacts/package/release
 ```
 

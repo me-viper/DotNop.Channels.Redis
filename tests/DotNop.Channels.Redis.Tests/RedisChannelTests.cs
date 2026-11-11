@@ -12,7 +12,7 @@ record M
     public int B { get; init; }
 }
 
-public class RedisChannelTests(ITestOutputHelper output) : IAsyncLifetime
+public sealed class RedisChannelTests(ITestOutputHelper output) : IAsyncLifetime
 {
     private IConnectionMultiplexer _cnn = null!;
 
@@ -21,65 +21,62 @@ public class RedisChannelTests(ITestOutputHelper output) : IAsyncLifetime
 
     public async ValueTask InitializeAsync()
     {
-        _cnn = await ConnectionMultiplexer.ConnectAsync("localhost:6379");
-        _cnn.GetDatabase().KeyDelete(ChannelName);
-        _cnn.GetDatabase().KeyDelete(RedisChannelUtils.CompletionKey(ChannelName));
+        _cnn = await TestRedis.ConnectAsync();
+        await _cnn.GetDatabase().KeyDeleteAsync([ChannelName, RedisChannelUtils.CompletionKey(ChannelName)]);
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
-        _cnn.GetDatabase().KeyDelete(ChannelName);
-        _cnn.GetDatabase().KeyDelete(RedisChannelUtils.CompletionKey(ChannelName));
+        if (_cnn == null!)
+            return;
 
-        return ValueTask.CompletedTask;
+        await _cnn.GetDatabase().KeyDeleteAsync([ChannelName, RedisChannelUtils.CompletionKey(ChannelName)]);
+        await _cnn.DisposeAsync();
     }
+
+    private RedisChannelWriter<M> Writer(RedisChannelOptions? opts = null) =>
+        new(ChannelName, _cnn.GetDatabase(), new JsonRedisValueSerializer<M>(), opts);
+
+    private RedisChannelReader<M> Reader(RedisChannelReaderOptions? opts = null) =>
+        new(ChannelName, _cnn.GetDatabase(), new JsonRedisValueSerializer<M>(), opts);
+
+    private RedisChannel<M> Channel(RedisChannelOptions? opts, bool utf8 = true) =>
+        new(
+            ChannelName,
+            _cnn.GetDatabase(),
+            utf8 ? new Utf8JsonRedisValueSerializer<M>() : new JsonRedisValueSerializer<M>(),
+            opts
+            );
 
     [Fact(Timeout = 15_000)]
-
-    //[Fact]
-    public async Task Channel()
+    public async Task Channel_WriterAndReaderRunConcurrently()
     {
         var wm = new M { A = "asd", B = 123213 };
 
-        using var channel = new RedisChannel<M>(
-            ChannelName,
-            _cnn.GetDatabase(),
-            new Utf8JsonRedisValueSerializer<M>(),
-            null
-            );
-
+        using var channel = Channel(null);
         using var goAhead = new AsyncAutoResetEvent(false);
 
         var writerTask = Task.Run(
             async () =>
             {
-                try
-                {
-                    // ReSharper disable once AccessToDisposedClosure
-                    var w = channel.Writer;
-                    var res = w.TryWrite(wm);
-                    Assert.True(res);
-                    output.WriteLine("Write #1");
+                // ReSharper disable once AccessToDisposedClosure
+                var w = channel.Writer;
+                Assert.True(w.TryWrite(wm));
+                output.WriteLine("Write #1");
 
-                    goAhead.Set();
-                    output.WriteLine("Signal #1");
+                // ReSharper disable once AccessToDisposedClosure
+                goAhead.Set();
 
-                    await Task.Delay(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+                // Give the reader time to block in WaitToReadAsync.
+                await Task.Delay(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
 
-                    res = w.TryWrite(wm);
-                    Assert.True(res);
-                    output.WriteLine("Write #2");
+                Assert.True(w.TryWrite(wm));
+                output.WriteLine("Write #2");
 
-                    res = w.TryComplete();
-                    Assert.True(res);
-                    output.WriteLine("Complete");
+                Assert.True(w.TryComplete());
+                output.WriteLine("Complete");
 
-                    await Assert.ThrowsAsync<ChannelClosedException>(async () => await w.WriteAsync(wm, TestContext.Current.CancellationToken));
-                }
-                catch (Exception ex)
-                {
-                    Assert.Fail(ex.Message);
-                }
+                await Assert.ThrowsAsync<ChannelClosedException>(async () => await w.WriteAsync(wm, TestContext.Current.CancellationToken));
             },
             TestContext.Current.CancellationToken
             );
@@ -87,37 +84,22 @@ public class RedisChannelTests(ITestOutputHelper output) : IAsyncLifetime
         var readerTask = Task.Run(
             async () =>
             {
-                try
-                {
-                    await goAhead.WaitAsync(TestContext.Current.CancellationToken);
-                    output.WriteLine("Signaled #1");
+                // ReSharper disable once AccessToDisposedClosure
+                await goAhead.WaitAsync(TestContext.Current.CancellationToken);
 
-                    // ReSharper disable once AccessToDisposedClosure
-                    var r = channel.Reader;
+                // ReSharper disable once AccessToDisposedClosure
+                var r = channel.Reader;
 
-                    var res = r.TryRead(out var rm);
-                    Assert.True(res);
-                    Assert.Equal(wm, rm);
-                    output.WriteLine("Read #1");
+                Assert.True(r.TryRead(out var rm));
+                Assert.Equal(wm, rm);
+                output.WriteLine("Read #1");
 
-                    var r1 = await r.WaitToReadAsync(TestContext.Current.CancellationToken);
-                    Assert.True(r1);
-                    output.WriteLine("Wait to read #1");
+                Assert.True(await r.WaitToReadAsync(TestContext.Current.CancellationToken));
+                Assert.Equal(wm, await r.ReadAsync(TestContext.Current.CancellationToken));
+                output.WriteLine("Read #2");
 
-                    rm = await r.ReadAsync(TestContext.Current.CancellationToken);
-                    Assert.Equal(wm, rm);
-                    output.WriteLine("Read #2");
-
-                    var r2 = await r.WaitToReadAsync(TestContext.Current.CancellationToken);
-                    Assert.False(r2);
-                    output.WriteLine("Wait to read #2");
-
-                    await Assert.ThrowsAsync<ChannelClosedException>(async () => await r.ReadAsync(TestContext.Current.CancellationToken));
-                }
-                catch (Exception ex)
-                {
-                    Assert.Fail(ex.Message);
-                }
+                Assert.False(await r.WaitToReadAsync(TestContext.Current.CancellationToken));
+                await Assert.ThrowsAsync<ChannelClosedException>(async () => await r.ReadAsync(TestContext.Current.CancellationToken));
             },
             TestContext.Current.CancellationToken
             );
@@ -125,39 +107,29 @@ public class RedisChannelTests(ITestOutputHelper output) : IAsyncLifetime
         await Task.WhenAll(writerTask, readerTask).WaitAsync(TestContext.Current.CancellationToken);
     }
 
-    [Fact]
-    public void Read()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Read(bool utf8)
     {
         var wm = new M { A = "asd", B = 1 };
 
-        using var channel = new RedisChannel<M>(
-            ChannelName,
-            _cnn.GetDatabase(),
-            new Utf8JsonRedisValueSerializer<M>(),
-            new(2) { FullMode = BoundedChannelFullMode.DropOldest }
-            );
+        using var channel = Channel(new(2) { FullMode = BoundedChannelFullMode.DropOldest }, utf8);
 
         var w = channel.Writer;
         var r = channel.Reader;
 
-        var r1 = r.TryPeek(out _);
-        Assert.False(r1);
-
-        var r2 = w.TryWrite(wm);
-        Assert.True(r2);
-
+        Assert.False(r.TryPeek(out _));
+        Assert.True(w.TryWrite(wm));
         Assert.True(w.TryComplete());
 
-        var r3 = r.TryPeek(out var m1);
-        Assert.True(r3);
+        Assert.True(r.TryPeek(out var m1));
         Assert.Equal(1, m1!.B);
 
-        var r4 = r.TryRead(out var m2);
-        Assert.True(r4);
+        Assert.True(r.TryRead(out var m2));
         Assert.Equal(1, m2!.B);
 
-        var r5 = r.TryRead(out _);
-        Assert.False(r5);
+        Assert.False(r.TryRead(out _));
     }
 
     [Fact]
@@ -165,25 +137,18 @@ public class RedisChannelTests(ITestOutputHelper output) : IAsyncLifetime
     {
         var wm = new M { A = "asd", B = 1 };
 
-        using var channel = new RedisChannel<M>(
-            ChannelName,
-            _cnn.GetDatabase(),
-            new Utf8JsonRedisValueSerializer<M>(),
-            new(2) { FullMode = BoundedChannelFullMode.DropOldest }
-            );
+        using var channel = Channel(new(2) { FullMode = BoundedChannelFullMode.DropOldest });
 
-        channel.Writer.TryWrite(wm with { B = 2 });
-        channel.Writer.TryWrite(wm with { B = 3 });
-        channel.Writer.TryWrite(wm with { B = 4 });
-        channel.Writer.TryWrite(wm with { B = 5 });
+        for (var i = 2; i <= 5; i++)
+            Assert.True(channel.Writer.TryWrite(wm with { B = i }));
 
-        var res = channel.Reader.TryRead(out var i1);
-        Assert.True(res);
+        Assert.True(channel.Reader.TryRead(out var i1));
         Assert.Equal(4, i1!.B);
 
-        res = channel.Reader.TryRead(out var i2);
-        Assert.True(res);
+        Assert.True(channel.Reader.TryRead(out var i2));
         Assert.Equal(5, i2!.B);
+
+        Assert.False(channel.Reader.TryRead(out _));
     }
 
     [Fact]
@@ -191,27 +156,21 @@ public class RedisChannelTests(ITestOutputHelper output) : IAsyncLifetime
     {
         var wm = new M { A = "asd", B = 1 };
 
-        using var channel = new RedisChannel<M>(
-            ChannelName,
-            _cnn.GetDatabase(),
-            new Utf8JsonRedisValueSerializer<M>(),
-            new(2) { FullMode = BoundedChannelFullMode.DropWrite }
-            );
+        using var channel = Channel(new(2) { FullMode = BoundedChannelFullMode.DropWrite });
 
-        channel.Writer.TryWrite(wm with { B = 2 });
-        channel.Writer.TryWrite(wm with { B = 3 });
-        channel.Writer.TryWrite(wm with { B = 4 });
-        channel.Writer.TryWrite(wm with { B = 5 });
+        // Writes to a full channel are dropped but still reported as successful.
+        for (var i = 2; i <= 5; i++)
+            Assert.True(channel.Writer.TryWrite(wm with { B = i }));
 
-        var res = channel.Reader.TryRead(out var i1);
-        Assert.True(res);
+        Assert.True(channel.Reader.TryRead(out var i1));
         Assert.Equal("asd", i1!.A);
         Assert.Equal(2, i1.B);
 
-        res = channel.Reader.TryRead(out var i2);
-        Assert.True(res);
+        Assert.True(channel.Reader.TryRead(out var i2));
         Assert.Equal("asd", i2!.A);
         Assert.Equal(3, i2.B);
+
+        Assert.False(channel.Reader.TryRead(out _));
     }
 
     [Fact]
@@ -219,84 +178,62 @@ public class RedisChannelTests(ITestOutputHelper output) : IAsyncLifetime
     {
         var wm = new M { A = "asd", B = 1 };
 
-        using var channel = new RedisChannel<M>(
-            ChannelName,
-            _cnn.GetDatabase(),
-            new Utf8JsonRedisValueSerializer<M>(),
-            new(2) { FullMode = BoundedChannelFullMode.DropNewest }
-            );
+        using var channel = Channel(new(2) { FullMode = BoundedChannelFullMode.DropNewest });
 
-        channel.Writer.TryWrite(wm with { B = 2 });
-        channel.Writer.TryWrite(wm with { B = 3 });
-        channel.Writer.TryWrite(wm with { B = 4 });
-        channel.Writer.TryWrite(wm with { B = 5 });
+        for (var i = 2; i <= 5; i++)
+            Assert.True(channel.Writer.TryWrite(wm with { B = i }));
 
-        var res = channel.Reader.TryRead(out var i1);
-        Assert.True(res);
+        Assert.True(channel.Reader.TryRead(out var i1));
         Assert.Equal("asd", i1!.A);
         Assert.Equal(2, i1.B);
 
-        res = channel.Reader.TryRead(out var i2);
-        Assert.True(res);
+        Assert.True(channel.Reader.TryRead(out var i2));
         Assert.Equal("asd", i2!.A);
         Assert.Equal(5, i2.B);
+
+        Assert.False(channel.Reader.TryRead(out _));
     }
 
-    [Fact]
+    [Fact(Timeout = 15_000)]
     public async Task BoundedWriterWait()
     {
         var wm = new M { A = "asd", B = 1 };
         using var goAhead = new AsyncAutoResetEvent(false);
 
-        using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-
         var writerTask = Task.Run(
             async () =>
             {
-                try
+                using var w = Writer(new(2) { FullMode = BoundedChannelFullMode.Wait });
+
+                await w.WriteAsync(wm with { B = 2 }, TestContext.Current.CancellationToken);
+                await w.WriteAsync(wm with { B = 3 }, TestContext.Current.CancellationToken);
+                Assert.False(w.TryWrite(wm with { B = 4 }));
+
+                using (var cts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken))
                 {
-                    using var w = new RedisChannelWriter<M>(
-                        ChannelName,
-                        _cnn.GetDatabase(),
-                        new JsonRedisValueSerializer<M>(),
-                        new(2) { FullMode = BoundedChannelFullMode.Wait }
-                        );
-
-                    await w.WriteAsync(wm with { B = 2 }, testCts.Token);
-                    await w.WriteAsync(wm with { B = 3 }, testCts.Token);
-
-                    var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-                    await Assert.ThrowsAsync<OperationCanceledException>(async () => await w.WriteAsync(wm with { B = 4 }, cts.Token));
-
-                    goAhead.Set();
-
-                    await w.WriteAsync(wm with { B = 5 }, testCts.Token);
-
-                    w.TryComplete();
+                    cts.CancelAfter(TimeSpan.FromSeconds(1));
+                    await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await w.WriteAsync(wm with { B = 4 }, cts.Token));
                 }
-                catch (Exception ex)
-                {
-                    Assert.Fail(ex.ToString());
-                    throw;
-                }
+
+                // ReSharper disable once AccessToDisposedClosure
+                goAhead.Set();
+
+                await w.WriteAsync(wm with { B = 5 }, TestContext.Current.CancellationToken);
+
+                Assert.True(w.TryComplete());
             },
-            testCts.Token
+            TestContext.Current.CancellationToken
             );
 
-        using var r = new RedisChannelReader<M>(ChannelName, _cnn.GetDatabase(), new JsonRedisValueSerializer<M>());
+        using var r = Reader();
 
-        await goAhead.WaitAsync(testCts.Token);
+        await goAhead.WaitAsync(TestContext.Current.CancellationToken);
 
-        var i1 = await r.ReadAsync(testCts.Token);
-        Assert.Equal(2, i1.B);
+        Assert.Equal(2, (await r.ReadAsync(TestContext.Current.CancellationToken)).B);
+        Assert.Equal(3, (await r.ReadAsync(TestContext.Current.CancellationToken)).B);
+        Assert.Equal(5, (await r.ReadAsync(TestContext.Current.CancellationToken)).B);
 
-        var i2 = await r.ReadAsync(testCts.Token);
-        Assert.Equal(3, i2.B);
-
-        var i3 = await r.ReadAsync(testCts.Token);
-        Assert.Equal(5, i3.B);
-
-        await writerTask.WaitAsync(testCts.Token);
+        await writerTask.WaitAsync(TestContext.Current.CancellationToken);
     }
 
     [Fact]
@@ -304,74 +241,41 @@ public class RedisChannelTests(ITestOutputHelper output) : IAsyncLifetime
     {
         var wm = new M { A = "asd", B = 1 };
 
-        using var w1 = new RedisChannelWriter<M>(
-            ChannelName,
-            _cnn.GetDatabase(),
-            new JsonRedisValueSerializer<M>(),
-            new(2) { FullMode = BoundedChannelFullMode.DropOldest }
-            );
+        using var w1 = Writer(new(2) { FullMode = BoundedChannelFullMode.DropOldest });
+        using var w2 = Writer(new(2) { FullMode = BoundedChannelFullMode.DropOldest });
 
-        using var w2 = new RedisChannelWriter<M>(
-            ChannelName,
-            _cnn.GetDatabase(),
-            new JsonRedisValueSerializer<M>(),
-            new(2) { FullMode = BoundedChannelFullMode.DropOldest }
-            );
+        Assert.True(w1.TryWrite(wm));
+        Assert.True(w2.TryWrite(wm));
+        Assert.True(w1.TryComplete(new InvalidOperationException("Close!")));
 
-        var r1 = w1.TryWrite(wm);
-        Assert.True(r1);
-
-        var r2 = w2.TryWrite(wm);
-        Assert.True(r2);
-
-        var r3 = w1.TryComplete(new InvalidOperationException("Close!"));
-        Assert.True(r3);
-
-        await Task.Delay(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+        // No wait for the close notification: the write itself detects completion in Redis.
         var ex = await Assert.ThrowsAsync<ChannelClosedException>(async () => await w2.WriteAsync(wm, TestContext.Current.CancellationToken));
 
         Assert.Equal("Close!", ex.Message);
     }
 
-    [Fact]
+    [Fact(Timeout = 10_000)]
     public async Task CloseChannelWithSuccess()
     {
         var wm = new M { A = "asd", B = 1 };
 
-        using var w1 = new RedisChannelWriter<M>(
-            ChannelName,
-            _cnn.GetDatabase(),
-            new JsonRedisValueSerializer<M>(),
-            new(2) { FullMode = BoundedChannelFullMode.DropOldest }
-            );
+        using var w1 = Writer(new(2) { FullMode = BoundedChannelFullMode.DropOldest });
+        using var w2 = Writer(new(2) { FullMode = BoundedChannelFullMode.DropOldest });
+        using var r = Reader();
 
-        using var w2 = new RedisChannelWriter<M>(
-            ChannelName,
-            _cnn.GetDatabase(),
-            new JsonRedisValueSerializer<M>(),
-            new(2) { FullMode = BoundedChannelFullMode.DropOldest }
-            );
+        Assert.True(w1.TryWrite(wm));
+        Assert.True(w2.TryWrite(wm with { B = 2 }));
+        Assert.True(w1.TryComplete());
 
-        using var r = new RedisChannelReader<M>(ChannelName, _cnn.GetDatabase(), new JsonRedisValueSerializer<M>());
-
-        var r1 = w1.TryWrite(wm);
-        Assert.True(r1);
-
-        var r2 = w2.TryWrite(wm with { B = 2 });
-        Assert.True(r2);
-
-        var r3 = w1.TryComplete();
-        Assert.True(r3);
-
-        await Task.Delay(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
         await Assert.ThrowsAsync<ChannelClosedException>(async () => await w2.WriteAsync(wm with { B = 3 }, TestContext.Current.CancellationToken));
 
-        var r4 = r.ReadAllAsync(TestContext.Current.CancellationToken)
-            .ToBlockingEnumerable(TestContext.Current.CancellationToken)
-            .ToArray();
+        var items = new List<M>();
+
+        await foreach (var p in r.ReadAllAsync(TestContext.Current.CancellationToken))
+            items.Add(p);
 
         Assert.Collection(
-            r4,
+            items,
             p => Assert.Equal(1, p.B),
             p => Assert.Equal(2, p.B)
             );
@@ -382,28 +286,14 @@ public class RedisChannelTests(ITestOutputHelper output) : IAsyncLifetime
     {
         var wm = new M { A = "asd", B = 1 };
 
-        using var w1 = new RedisChannelWriter<M>(
-            ChannelName,
-            _cnn.GetDatabase(),
-            new JsonRedisValueSerializer<M>(),
-            new(2) { FullMode = BoundedChannelFullMode.DropOldest }
-            );
+        using var w1 = Writer(new(2) { FullMode = BoundedChannelFullMode.DropOldest });
 
-        var r1 = w1.TryWrite(wm);
-        Assert.True(r1);
+        Assert.True(w1.TryWrite(wm));
+        Assert.True(w1.TryComplete());
 
-        var r2 = w1.TryComplete();
-        Assert.True(r2);
+        using var w2 = Writer(new(2) { FullMode = BoundedChannelFullMode.DropOldest });
 
-        using var w2 = new RedisChannelWriter<M>(
-            ChannelName,
-            _cnn.GetDatabase(),
-            new JsonRedisValueSerializer<M>(),
-            new(2) { FullMode = BoundedChannelFullMode.DropOldest }
-            );
-
-        var r3 = w2.TryWrite(wm);
-        Assert.False(r3);
+        Assert.False(w2.TryWrite(wm));
     }
 
     [Fact]
@@ -411,211 +301,124 @@ public class RedisChannelTests(ITestOutputHelper output) : IAsyncLifetime
     {
         var wm = new M { A = "asd", B = 1 };
 
-        using var w1 = new RedisChannelWriter<M>(
-            ChannelName,
-            _cnn.GetDatabase(),
-            new JsonRedisValueSerializer<M>(),
-            new(2) { FullMode = BoundedChannelFullMode.DropOldest }
-            );
+        using var w1 = Writer(new(2) { FullMode = BoundedChannelFullMode.DropOldest });
 
-        var r1 = w1.TryWrite(wm);
-        Assert.True(r1);
+        Assert.True(w1.TryWrite(wm));
+        Assert.True(w1.TryComplete(new InvalidOperationException("Close!")));
 
-        var r2 = w1.TryComplete(new InvalidOperationException("Close!"));
-        Assert.True(r2);
-
-        using var w2 = new RedisChannelWriter<M>(
-            ChannelName,
-            _cnn.GetDatabase(),
-            new JsonRedisValueSerializer<M>(),
-            new(2) { FullMode = BoundedChannelFullMode.DropOldest }
-            );
+        using var w2 = Writer(new(2) { FullMode = BoundedChannelFullMode.DropOldest });
 
         Assert.False(w2.TryWrite(wm));
 
-        var ex = await Assert.ThrowsAsync<ChannelClosedException>(async () => await w2.WriteAsync(wm, TestContext.Current.CancellationToken)
-            );
+        var ex = await Assert.ThrowsAsync<ChannelClosedException>(async () => await w2.WriteAsync(wm, TestContext.Current.CancellationToken));
 
         Assert.Equal("Close!", ex.Message);
     }
 
-    [Fact]
-    public async Task Cleanup()
+    [Fact(Timeout = 10_000)]
+    public async Task Cleanup_SlidingExpirationAppliesAfterCompletion()
     {
-        var wm = new M { A = "asd", B = 1 };
-
         var db = _cnn.GetDatabase();
 
-        using var writer = new RedisChannelWriter<M>(
-            ChannelName,
-            db,
-            new JsonRedisValueSerializer<M>(),
-            new(2) { ChannelSlidingExpiration = TimeSpan.FromSeconds(1) }
-            );
+        using var writer = Writer(new(2) { ChannelSlidingExpiration = TimeSpan.FromSeconds(1) });
 
-        var r1 = writer.TryWrite(wm);
-        Assert.True(r1);
+        Assert.True(writer.TryWrite(new() { A = "asd", B = 1 }));
+        Assert.True(writer.TryComplete());
 
-        var r2 = writer.TryComplete();
-        Assert.True(r2);
+        Assert.NotNull(db.KeyTimeToLive(ChannelName));
+        Assert.NotNull(db.KeyTimeToLive(RedisChannelUtils.CompletionKey(ChannelName)));
 
-        Assert.True(db.KeyExists(ChannelName));
-        Assert.True(db.KeyExists(RedisChannelUtils.CompletionKey(ChannelName)));
-
-        await Task.Delay(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
-
-        Assert.False(db.KeyExists(ChannelName));
+        Assert.True(await TestRedis.WaitUntilAsync(() => !db.KeyExists(ChannelName), TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
         Assert.False(db.KeyExists(RedisChannelUtils.CompletionKey(ChannelName)));
     }
 
-    [Fact]
-    public async Task Cleanup2()
+    [Fact(Timeout = 10_000)]
+    public async Task Cleanup_ExpireAfterCompletion()
     {
-        var wm = new M { A = "asd", B = 1 };
-
         var db = _cnn.GetDatabase();
 
-        using var writer = new RedisChannelWriter<M>(
-            ChannelName,
-            db,
-            new JsonRedisValueSerializer<M>(),
-            new(2) { ExpireAfterCompletion = TimeSpan.FromSeconds(3) }
-            );
+        using var writer = Writer(new(2) { ExpireAfterCompletion = TimeSpan.FromSeconds(1) });
 
-        var r1 = writer.TryWrite(wm);
-        Assert.True(r1);
+        Assert.True(writer.TryWrite(new() { A = "asd", B = 1 }));
 
-        var r2 = writer.TryComplete();
-        Assert.True(r2);
+        // No expiration before completion.
+        Assert.Null(db.KeyTimeToLive(ChannelName));
 
-        Assert.True(db.KeyExists(ChannelName));
-        Assert.True(db.KeyExists(RedisChannelUtils.CompletionKey(ChannelName)));
+        Assert.True(writer.TryComplete());
 
-        await Task.Delay(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        Assert.NotNull(db.KeyTimeToLive(ChannelName));
+        Assert.NotNull(db.KeyTimeToLive(RedisChannelUtils.CompletionKey(ChannelName)));
 
-        Assert.False(db.KeyExists(ChannelName));
+        Assert.True(await TestRedis.WaitUntilAsync(() => !db.KeyExists(ChannelName), TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
         Assert.False(db.KeyExists(RedisChannelUtils.CompletionKey(ChannelName)));
     }
 
     [Fact]
     public void CanReadIfClosed()
     {
-        var wm = new M { A = "asd", B = 1 };
+        using var writer = Writer(new(2) { FullMode = BoundedChannelFullMode.DropOldest });
 
-        using var writer = new RedisChannelWriter<M>(
-            ChannelName,
-            _cnn.GetDatabase(),
-            new JsonRedisValueSerializer<M>(),
-            new(2) { FullMode = BoundedChannelFullMode.DropOldest }
-            );
+        Assert.True(writer.TryWrite(new() { A = "asd", B = 1 }));
+        Assert.True(writer.TryComplete());
 
-        var r1 = writer.TryWrite(wm);
-        Assert.True(r1);
+        using var reader = Reader();
 
-        var r2 = writer.TryComplete();
-        Assert.True(r2);
-
-        using var reader = new RedisChannelReader<M>(
-            ChannelName,
-            _cnn.GetDatabase(),
-            new JsonRedisValueSerializer<M>()
-            );
-
-        var r3 = reader.TryRead(out _);
-        Assert.True(r3);
-
-        var r4 = reader.TryRead(out _);
-        Assert.False(r4);
+        Assert.True(reader.TryRead(out _));
+        Assert.False(reader.TryRead(out _));
     }
 
-    [Fact(Timeout = 15_000)]
+    [Fact(Timeout = 10_000)]
+    public async Task CanDrainThenFailIfClosedWithError()
+    {
+        using var writer = Writer();
 
-    //[Fact]
+        Assert.True(writer.TryWrite(new() { A = "asd", B = 1 }));
+        Assert.True(writer.TryComplete(new InvalidOperationException("boom")));
+
+        using var reader = Reader();
+
+        Assert.True(await reader.WaitToReadAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(1, (await reader.ReadAsync(TestContext.Current.CancellationToken)).B);
+
+        var ex = await Assert.ThrowsAsync<ChannelClosedException>(async () => await reader.WaitToReadAsync(TestContext.Current.CancellationToken));
+        Assert.Equal("boom", ex.Message);
+
+        await Assert.ThrowsAsync<ChannelClosedException>(() => reader.Completion);
+    }
+
+    [Fact(Timeout = 10_000)]
     public async Task ReaderHandleExpiration()
     {
-        var wm = new M { A = "asd", B = 1 };
+        var expiration = TimeSpan.FromSeconds(1);
 
-        using var writer = new RedisChannelWriter<M>(
-            ChannelName,
-            _cnn.GetDatabase(),
-            new JsonRedisValueSerializer<M>(),
-            new(2) { FullMode = BoundedChannelFullMode.DropOldest, ChannelSlidingExpiration = TimeSpan.FromSeconds(3) }
-            );
+        using var writer = Writer(new(2) { FullMode = BoundedChannelFullMode.DropOldest, ChannelSlidingExpiration = expiration });
+        using var reader = Reader(new() { ChannelSlidingExpiration = expiration });
 
-        using var reader = new RedisChannelReader<M>(
-            ChannelName,
-            _cnn.GetDatabase(),
-            new JsonRedisValueSerializer<M>(),
-            new() { ChannelSlidingExpiration = TimeSpan.FromSeconds(3) }
-            );
-
-        Assert.True(writer.TryWrite(wm));
+        Assert.True(writer.TryWrite(new() { A = "asd", B = 1 }));
         Assert.True(reader.TryPeek(out _));
 
-        await Task.Delay(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+        var db = _cnn.GetDatabase();
+        Assert.True(await TestRedis.WaitUntilAsync(() => !db.KeyExists(ChannelName), TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
 
         Assert.False(reader.TryRead(out _));
-
-        var r1 = await reader.WaitToReadAsync(TestContext.Current.CancellationToken);
-        Assert.False(r1);
-
+        Assert.False(await reader.WaitToReadAsync(TestContext.Current.CancellationToken));
         await Assert.ThrowsAsync<ChannelClosedException>(async () => await reader.ReadAsync(TestContext.Current.CancellationToken));
     }
 
-    [Fact(Timeout = 15_000)]
-
-    //[Fact]
+    [Fact(Timeout = 10_000)]
     public async Task WriterHandleExpiration()
     {
         var wm = new M { A = "asd", B = 1 };
 
-        using var writer = new RedisChannelWriter<M>(
-            ChannelName,
-            _cnn.GetDatabase(),
-            new JsonRedisValueSerializer<M>(),
-            new(2) { FullMode = BoundedChannelFullMode.Wait, ChannelSlidingExpiration = TimeSpan.FromSeconds(5) }
+        using var writer = Writer(
+            new(2) { FullMode = BoundedChannelFullMode.Wait, ChannelSlidingExpiration = TimeSpan.FromSeconds(1) }
             );
 
         Assert.True(writer.TryWrite(wm));
         Assert.True(writer.TryWrite(wm));
         Assert.False(writer.TryWrite(wm));
 
-        var r1 = await writer.WaitToWriteAsync(TestContext.Current.CancellationToken);
-        Assert.True(r1);
-    }
-
-    [Fact]
-    public void ReadUtf8()
-    {
-        var wm = new M { A = "asd", B = 1 };
-
-        using var channel = new RedisChannel<M>(
-            ChannelName,
-            _cnn.GetDatabase(),
-            new Utf8JsonRedisValueSerializer<M>(),
-            new(2) { FullMode = BoundedChannelFullMode.DropOldest }
-            );
-
-        var w = channel.Writer;
-        var r = channel.Reader;
-
-        var r1 = r.TryPeek(out _);
-        Assert.False(r1);
-
-        var r2 = w.TryWrite(wm);
-        Assert.True(r2);
-
-        Assert.True(w.TryComplete());
-
-        var r3 = r.TryPeek(out var m1);
-        Assert.True(r3);
-        Assert.Equal(1, m1!.B);
-
-        var r4 = r.TryRead(out var m2);
-        Assert.True(r4);
-        Assert.Equal(1, m2!.B);
-
-        var r5 = r.TryRead(out _);
-        Assert.False(r5);
+        // The full list expires, so there is room again.
+        Assert.True(await writer.WaitToWriteAsync(TestContext.Current.CancellationToken));
     }
 }
