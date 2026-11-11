@@ -57,7 +57,7 @@ public sealed class MetricsTests : IAsyncLifetime
                 () =>
                 {
                     listener.RecordObservableInstruments();
-                    return observed == 3;
+                    return Task.FromResult(observed == 3);
                 },
                 TimeSpan.FromSeconds(5),
                 ct

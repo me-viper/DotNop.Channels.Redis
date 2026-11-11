@@ -40,6 +40,14 @@ public sealed class RedisChannelTests(ITestOutputHelper output) : IAsyncLifetime
     private RedisChannelReader<M> Reader(RedisChannelReaderOptions? opts = null) =>
         new(ChannelName, _cnn.GetDatabase(), new JsonRedisValueSerializer<M>(), opts);
 
+    /// <summary>Waits up to 5 seconds for the channel list key to expire.</summary>
+    private Task<bool> WaitUntilChannelKeyExpiredAsync(IDatabase db, CancellationToken cancellationToken) =>
+        TestRedis.WaitUntilAsync(
+            async () => !await db.KeyExistsAsync(ChannelName).ConfigureAwait(false),
+            TimeSpan.FromSeconds(5),
+            cancellationToken
+            );
+
     private RedisChannel<M> Channel(RedisChannelOptions? opts, bool utf8 = true) =>
         new(
             ChannelName,
@@ -328,8 +336,8 @@ public sealed class RedisChannelTests(ITestOutputHelper output) : IAsyncLifetime
         Assert.NotNull(db.KeyTimeToLive(ChannelName));
         Assert.NotNull(db.KeyTimeToLive(RedisChannelUtils.CompletionKey(ChannelName)));
 
-        Assert.True(await TestRedis.WaitUntilAsync(() => !db.KeyExists(ChannelName), TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
-        Assert.False(db.KeyExists(RedisChannelUtils.CompletionKey(ChannelName)));
+        Assert.True(await WaitUntilChannelKeyExpiredAsync(db, TestContext.Current.CancellationToken));
+        Assert.False(await db.KeyExistsAsync(RedisChannelUtils.CompletionKey(ChannelName)));
     }
 
     [Fact(Timeout = 10_000)]
@@ -349,8 +357,8 @@ public sealed class RedisChannelTests(ITestOutputHelper output) : IAsyncLifetime
         Assert.NotNull(db.KeyTimeToLive(ChannelName));
         Assert.NotNull(db.KeyTimeToLive(RedisChannelUtils.CompletionKey(ChannelName)));
 
-        Assert.True(await TestRedis.WaitUntilAsync(() => !db.KeyExists(ChannelName), TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
-        Assert.False(db.KeyExists(RedisChannelUtils.CompletionKey(ChannelName)));
+        Assert.True(await WaitUntilChannelKeyExpiredAsync(db, TestContext.Current.CancellationToken));
+        Assert.False(await db.KeyExistsAsync(RedisChannelUtils.CompletionKey(ChannelName)));
     }
 
     [Fact]
@@ -398,7 +406,7 @@ public sealed class RedisChannelTests(ITestOutputHelper output) : IAsyncLifetime
         Assert.True(reader.TryPeek(out _));
 
         var db = _cnn.GetDatabase();
-        Assert.True(await TestRedis.WaitUntilAsync(() => !db.KeyExists(ChannelName), TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+        Assert.True(await WaitUntilChannelKeyExpiredAsync(db, TestContext.Current.CancellationToken));
 
         Assert.False(reader.TryRead(out _));
         Assert.False(await reader.WaitToReadAsync(TestContext.Current.CancellationToken));

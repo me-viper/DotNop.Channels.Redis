@@ -70,11 +70,18 @@ internal static class TestRedis
     }
 
     /// <summary>Polls <paramref name="condition" /> until it holds or <paramref name="timeout" /> passes.</summary>
-    public static async Task<bool> WaitUntilAsync(Func<bool> condition, TimeSpan timeout, CancellationToken cancellationToken)
+    /// <remarks>
+    /// The condition is async so polling never blocks a thread-pool thread on a synchronous Redis call: with many tests
+    /// running in parallel on a small CI runner, such calls have timed out.
+    /// </remarks>
+    public static async Task<bool> WaitUntilAsync(
+        Func<Task<bool>> condition,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
     {
         var deadline = DateTime.UtcNow + timeout;
 
-        while (!condition())
+        while (!await condition().ConfigureAwait(false))
         {
             if (DateTime.UtcNow >= deadline)
                 return false;
