@@ -1,6 +1,7 @@
 # DotNop.Channels.Redis
 
 [![CI](https://github.com/me-viper/DotNop.Channels.Redis/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/me-viper/DotNop.Channels.Redis/actions/workflows/ci.yml)
+[![NuGet](https://img.shields.io/nuget/v/DotNop.Channels.Redis.svg)](https://www.nuget.org/packages/DotNop.Channels.Redis)
 
 `System.Threading.Channels` implementation backed by Redis. `RedisChannel<T>` is a `Channel<T>` whose reader and writer
 can live in different processes and share messages through a Redis key.
