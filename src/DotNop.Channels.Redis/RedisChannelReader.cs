@@ -1,6 +1,4 @@
 ﻿using System.Diagnostics;
-using System.Diagnostics.Metrics;
-using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 
 using DotNext.Threading;
@@ -26,13 +24,19 @@ public sealed class RedisChannelReader<T> : ChannelReader<T>, IDisposable
 
     private readonly ISubscriber _sub;
 
-    private Exception? _doneWriting;
+    private readonly ChannelMessageQueue _subscription;
+
+    private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private volatile Exception? _doneWriting;
 
     public override bool CanCount => true;
 
     public override bool CanPeek => true;
 
     public override int Count => (int)_db.ListLength(_channel);
+
+    public override Task Completion => _completion.Task;
 
     public RedisChannelReader(string channel, IDatabase db, IRedisValueSerializer<T> serializer) : this(channel, db, serializer, null)
     {
@@ -50,26 +54,21 @@ public sealed class RedisChannelReader<T> : ChannelReader<T>, IDisposable
         _opts = opts ?? new();
 
         _sub = _db.Multiplexer.GetSubscriber();
-        _sub.Subscribe(new RedisChannel(_channel, RedisChannel.PatternMode.Literal))
-            .OnMessage(p =>
+        _subscription = _sub.Subscribe(RedisChannelUtils.PubSubChannel(_channel));
+        _subscription.OnMessage(p =>
+            {
+                if (string.Equals(p.Message, RedisChannelUtils.MessageWritten, StringComparison.Ordinal))
+                    _readerSync.Set();
+
+                if (string.Equals(p.Message, RedisChannelUtils.CloseChannel, StringComparison.Ordinal))
                 {
-                    if (string.Equals(p.Message, RedisChannelUtils.MessageWritten, StringComparison.Ordinal))
-                        _readerSync.Set();
-
-                    if (string.Equals(p.Message, RedisChannelUtils.CloseChannel, StringComparison.Ordinal))
-                    {
-                        CheckIfClosed();
-                        _readerSync.Set();
-                    }
+                    CheckIfClosed();
+                    _readerSync.Set();
                 }
-                );
-
-        Metrics.Meter.CreateObservableGauge(
-            "dotnop.channels.redis.queue.count",
-            () => new Measurement<long>(Count, new KeyValuePair<string, object?>("channel", _channel)),
-            unit: "{message}",
-            description: "Number of messages in channel"
+            }
             );
+
+        Metrics.RegisterQueue(this, _channel, () => _db.ListLength(_channel));
 
         CheckIfClosed();
     }
@@ -78,24 +77,32 @@ public sealed class RedisChannelReader<T> : ChannelReader<T>, IDisposable
     {
         var eof = _db.StringGet(RedisChannelUtils.EofChannel(_channel));
 
-        if (!eof.IsNull)
-            _doneWriting = eof.IsNullOrEmpty ? RedisChannelUtils.DoneWritingException : new ChannelClosedException(eof);
+        if (eof.IsNull)
+            return;
+
+        _doneWriting = eof.IsNullOrEmpty ? RedisChannelUtils.DoneWritingException : new ChannelClosedException(eof);
+
+        if (_db.ListLength(_channel) == 0)
+            CompleteReader();
     }
 
-    private bool IsCompleted()
+    /// <summary>Completes <see cref="Completion"/> once the channel is closed and drained.</summary>
+    private void CompleteReader()
     {
-        if (_doneWriting == null)
-            return false;
+        var doneWriting = _doneWriting;
 
-        if (_doneWriting == RedisChannelUtils.DoneWritingException)
-            return true;
+        if (doneWriting == null)
+            return;
 
-        throw _doneWriting;
+        if (doneWriting == RedisChannelUtils.DoneWritingException)
+            _completion.TrySetResult();
+        else
+            _completion.TrySetException(doneWriting);
     }
 
     private void Notify()
     {
-        _sub.Publish(new RedisChannel(_channel, RedisChannel.PatternMode.Literal), RedisChannelUtils.MessageRead);
+        _sub.Publish(RedisChannelUtils.PubSubChannel(_channel), RedisChannelUtils.MessageRead);
 
         if (_opts.ChannelSlidingExpiration != TimeSpan.Zero)
         {
@@ -107,7 +114,8 @@ public sealed class RedisChannelReader<T> : ChannelReader<T>, IDisposable
     /// <inheritdoc />
     public void Dispose()
     {
-        _sub.Unsubscribe(new RedisChannel(_channel, RedisChannel.PatternMode.Literal));
+        Metrics.UnregisterQueue(this);
+        _subscription.Unsubscribe();
     }
 
     /// <inheritdoc />
@@ -118,14 +126,13 @@ public sealed class RedisChannelReader<T> : ChannelReader<T>, IDisposable
         if (msg.IsNull)
         {
             item = default;
-            IsCompleted();
+            CompleteReader();
             return false;
         }
 
-        item = _serializer.ReadRedisValue(msg);
-        return item != null;
+        item = _serializer.ReadRedisValue(msg)!;
+        return true;
     }
-
 
     /// <inheritdoc />
     public override bool TryRead([MaybeNullWhen(false)] out T item)
@@ -135,40 +142,16 @@ public sealed class RedisChannelReader<T> : ChannelReader<T>, IDisposable
         if (msg.IsNull)
         {
             item = default;
-            IsCompleted();
+            CompleteReader();
             return false;
         }
 
-        item = _serializer.ReadRedisValue(msg);
-        var result = item != null;
+        item = _serializer.ReadRedisValue(msg)!;
 
         Metrics.MessageRead(_channel);
+        Notify();
 
-        if (result)
-            Notify();
-
-        return result;
-    }
-
-    /// <inheritdoc />
-    public override async IAsyncEnumerable<T> ReadAllAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
-    {
-        if (!await WaitToReadAsync(cancellationToken).ConfigureAwait(false))
-            yield break;
-
-        foreach (var msg in await _db.ListRangeAsync(_channel).ConfigureAwait(false))
-        {
-            Metrics.MessageRead(_channel);
-            Notify();
-
-            if (cancellationToken.IsCancellationRequested)
-                yield break;
-
-            var item = _serializer.ReadRedisValue(msg);
-
-            if (item != null)
-                yield return item;
-        }
+        return true;
     }
 
     /// <inheritdoc />
@@ -180,11 +163,19 @@ public sealed class RedisChannelReader<T> : ChannelReader<T>, IDisposable
         {
             sw.Start();
 
-            if (IsCompleted())
-                return false;
+            var doneWriting = _doneWriting;
 
-            if (cancellationToken.IsCancellationRequested)
-                return await ValueTask.FromCanceled<bool>(cancellationToken).ConfigureAwait(false);
+            if (doneWriting != null)
+            {
+                CompleteReader();
+
+                if (doneWriting == RedisChannelUtils.DoneWritingException)
+                    return false;
+
+                throw doneWriting;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
 
             var signaled = true;
 
@@ -193,8 +184,12 @@ public sealed class RedisChannelReader<T> : ChannelReader<T>, IDisposable
             else
                 signaled = await _readerSync.WaitAsync(_opts.ChannelSlidingExpiration, cancellationToken).ConfigureAwait(false);
 
-            if (!signaled && !_db.KeyExists(_channel))
+            if (!signaled && !await _db.KeyExistsAsync(_channel).ConfigureAwait(false))
+            {
+                // Channel expired: nobody will ever write to it again.
+                _completion.TrySetResult();
                 return false;
+            }
         }
 
         if (sw.IsRunning)

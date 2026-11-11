@@ -1,4 +1,4 @@
-using System.Threading.Channels;
+﻿using System.Threading.Channels;
 
 using DotNext.Threading;
 
@@ -15,7 +15,9 @@ record M
 public class RedisChannelTests(ITestOutputHelper output) : IAsyncLifetime
 {
     private IConnectionMultiplexer _cnn = null!;
-    private const string ChannelName = "xx_m1";
+
+    // Unique per test (xunit creates a class instance per test), so parallel runs never share Redis keys.
+    private string ChannelName { get; } = $"test_{Guid.NewGuid():N}";
 
     public async ValueTask InitializeAsync()
     {
@@ -405,7 +407,7 @@ public class RedisChannelTests(ITestOutputHelper output) : IAsyncLifetime
     }
 
     [Fact]
-    public void WriteFailsIfClosedWithError()
+    public async Task WriteFailsIfClosedWithError()
     {
         var wm = new M { A = "asd", B = 1 };
 
@@ -422,17 +424,16 @@ public class RedisChannelTests(ITestOutputHelper output) : IAsyncLifetime
         var r2 = w1.TryComplete(new InvalidOperationException("Close!"));
         Assert.True(r2);
 
-        var ex = Assert.Throws<ChannelClosedException>(() =>
-            {
-                using var w2 = new RedisChannelWriter<M>(
-                    ChannelName,
-                    _cnn.GetDatabase(),
-                    new JsonRedisValueSerializer<M>(),
-                    new(2) { FullMode = BoundedChannelFullMode.DropOldest }
-                    );
+        using var w2 = new RedisChannelWriter<M>(
+            ChannelName,
+            _cnn.GetDatabase(),
+            new JsonRedisValueSerializer<M>(),
+            new(2) { FullMode = BoundedChannelFullMode.DropOldest }
+            );
 
-                w2.TryWrite(wm);
-            }
+        Assert.False(w2.TryWrite(wm));
+
+        var ex = await Assert.ThrowsAsync<ChannelClosedException>(async () => await w2.WriteAsync(wm, TestContext.Current.CancellationToken)
             );
 
         Assert.Equal("Close!", ex.Message);

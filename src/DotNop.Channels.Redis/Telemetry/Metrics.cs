@@ -1,4 +1,7 @@
-﻿using System.Diagnostics.Metrics;
+﻿using System.Collections.Concurrent;
+using System.Diagnostics.Metrics;
+
+using StackExchange.Redis;
 
 namespace DotNop.Channels.Redis.Telemetry;
 
@@ -29,6 +32,17 @@ internal static class Metrics
         description: "Number of seconds waited to read from channel"
         );
 
+    /// <summary>Live readers, keyed by instance; several readers of one channel are reported once.</summary>
+    private static readonly ConcurrentDictionary<object, (string Channel, Func<long> Count)> Queues = new();
+
+    [UsedImplicitly]
+    private static readonly ObservableGauge<long> QueueCount = Meter.CreateObservableGauge(
+        "dotnop.channels.redis.queue.count",
+        ObserveQueues,
+        unit: "{message}",
+        description: "Number of messages in channel"
+        );
+
     public static void MessageWritten(string channel) => Sent.Add(1, new KeyValuePair<string, object?>("channel", channel));
 
     public static void MessageRead(string channel) => Read.Add(1, new KeyValuePair<string, object?>("channel", channel));
@@ -42,4 +56,33 @@ internal static class Metrics
         ts.TotalSeconds,
         new KeyValuePair<string, object?>("channel", channel)
         );
+
+    public static void RegisterQueue(object owner, string channel, Func<long> count) => Queues[owner] = (channel, count);
+
+    public static void UnregisterQueue(object owner) => Queues.TryRemove(owner, out _);
+
+    private static IEnumerable<Measurement<long>> ObserveQueues()
+    {
+        var channels = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var (channel, count) in Queues.Values)
+        {
+            if (!channels.Add(channel))
+                continue;
+
+            long value;
+
+            try
+            {
+                value = count();
+            }
+            catch (Exception p) when (p is RedisException or TimeoutException)
+            {
+                // Redis unavailable: skip this channel rather than failing the whole collection.
+                continue;
+            }
+
+            yield return new Measurement<long>(value, new KeyValuePair<string, object?>("channel", channel));
+        }
+    }
 }

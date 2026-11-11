@@ -46,7 +46,7 @@ override DotNop.Channels.Redis.RedisChannelOptions.ToString() -> string!
 override DotNop.Channels.Redis.RedisChannelReader<T>.CanCount.get -> bool
 override DotNop.Channels.Redis.RedisChannelReader<T>.CanPeek.get -> bool
 override DotNop.Channels.Redis.RedisChannelReader<T>.Count.get -> int
-override DotNop.Channels.Redis.RedisChannelReader<T>.ReadAllAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Collections.Generic.IAsyncEnumerable<T>!
+override DotNop.Channels.Redis.RedisChannelReader<T>.Completion.get -> System.Threading.Tasks.Task!
 override DotNop.Channels.Redis.RedisChannelReader<T>.TryPeek(out T item) -> bool
 override DotNop.Channels.Redis.RedisChannelReader<T>.TryRead(out T item) -> bool
 override DotNop.Channels.Redis.RedisChannelReader<T>.WaitToReadAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<bool>

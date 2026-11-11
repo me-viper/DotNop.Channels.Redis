@@ -12,6 +12,35 @@ namespace DotNop.Channels.Redis;
 [PublicAPI]
 public sealed class RedisChannelWriter<T> : ChannelWriter<T>, IDisposable
 {
+    /// <summary>Pushes the item only if the list has room; returns 0 when full.</summary>
+    private static readonly LuaScript PushIfNotFull = LuaScript.Prepare(
+        """
+        if redis.call('LLEN', @key) >= tonumber(@cap) then return 0 end
+        return redis.call('RPUSH', @key, @v)
+        """
+        );
+
+    /// <summary>Removes the newest items to make room, then pushes.</summary>
+    private static readonly LuaScript PushDropNewest = LuaScript.Prepare(
+        """
+        local cap = tonumber(@cap)
+        if redis.call('LLEN', @key) >= cap then
+            if cap == 1 then redis.call('DEL', @key) else redis.call('LTRIM', @key, 0, cap - 2) end
+        end
+        return redis.call('RPUSH', @key, @v)
+        """
+        );
+
+    /// <summary>Pushes, then removes the oldest items beyond capacity.</summary>
+    private static readonly LuaScript PushDropOldest = LuaScript.Prepare(
+        """
+        local cap = tonumber(@cap)
+        local llen = redis.call('RPUSH', @key, @v)
+        if llen > cap then redis.call('LTRIM', @key, -cap, -1) end
+        return llen
+        """
+        );
+
     private readonly string _channel;
 
     private readonly IDatabase _db;
@@ -24,7 +53,9 @@ public sealed class RedisChannelWriter<T> : ChannelWriter<T>, IDisposable
 
     private readonly ISubscriber _sub;
 
-    private Exception? _doneWriting;
+    private readonly ChannelMessageQueue _subscription;
+
+    private volatile Exception? _doneWriting;
 
     public RedisChannelWriter(string channel, IDatabase db, IRedisValueSerializer<T> serializer) : this(channel, db, serializer, null)
     {
@@ -39,26 +70,22 @@ public sealed class RedisChannelWriter<T> : ChannelWriter<T>, IDisposable
         _channel = channel;
         _db = db;
         _serializer = serializer;
-        _opts = opts ?? new RedisChannelOptions(int.MaxValue);
-
-        if (_opts.Capacity <= 0)
-            throw new InvalidOperationException("Bounded channel capacity should be greater than 1");
+        _opts = opts ?? new RedisChannelOptions();
 
         _sub = _db.Multiplexer.GetSubscriber();
+        _subscription = _sub.Subscribe(RedisChannelUtils.PubSubChannel(_channel));
+        _subscription.OnMessage(p =>
+            {
+                if (string.Equals(p.Message, RedisChannelUtils.MessageRead, StringComparison.Ordinal))
+                    _writerSync.Set();
 
-        _sub.Subscribe(new RedisChannel(_channel, RedisChannel.PatternMode.Literal))
-            .OnMessage(p =>
+                if (string.Equals(p.Message, RedisChannelUtils.CloseChannel, StringComparison.Ordinal))
                 {
-                    if (string.Equals(p.Message, RedisChannelUtils.MessageRead, StringComparison.Ordinal))
-                        _writerSync.Set();
-
-                    if (string.Equals(p.Message, RedisChannelUtils.CloseChannel, StringComparison.Ordinal))
-                    {
-                        TryComplete(false);
-                        _writerSync.Set();
-                    }
+                    TryComplete(false);
+                    _writerSync.Set();
                 }
-                );
+            }
+            );
 
         var eof = _db.StringGet(RedisChannelUtils.EofChannel(_channel));
 
@@ -66,28 +93,23 @@ public sealed class RedisChannelWriter<T> : ChannelWriter<T>, IDisposable
             _doneWriting = eof.IsNullOrEmpty ? RedisChannelUtils.DoneWritingException : new ChannelClosedException(eof);
     }
 
-    private bool CheckCompleted()
-    {
-        if (_doneWriting == null)
-            return false;
-
-        if (_doneWriting == RedisChannelUtils.DoneWritingException)
-            return true;
-
-        throw _doneWriting;
-    }
-
-    private bool FullCapacity()
+    private async Task<bool> FullCapacityAsync()
     {
         if (!_opts.HasCapacity)
             return false;
 
-        return _db.ListLength(_channel) >= _opts.Capacity;
+        return await _db.ListLengthAsync(_channel).ConfigureAwait(false) >= _opts.Capacity;
+    }
+
+    private long Push(LuaScript script, RedisValue msg)
+    {
+        var result = _db.ScriptEvaluate(script, new { key = (RedisKey)_channel, v = msg, cap = _opts.Capacity });
+        return result.IsNull ? 0 : (long)result;
     }
 
     private void Notify()
     {
-        _sub.Publish(new RedisChannel(_channel, RedisChannel.PatternMode.Literal), RedisChannelUtils.MessageWritten);
+        _sub.Publish(RedisChannelUtils.PubSubChannel(_channel), RedisChannelUtils.MessageWritten);
 
         if (_opts.ChannelSlidingExpiration != TimeSpan.Zero)
         {
@@ -97,90 +119,77 @@ public sealed class RedisChannelWriter<T> : ChannelWriter<T>, IDisposable
     }
 
     /// <inheritdoc />
-    public void Dispose()
-    {
-        _sub.Unsubscribe(new RedisChannel(_channel, RedisChannel.PatternMode.Literal));
-    }
+    public void Dispose() => _subscription.Unsubscribe();
 
     /// <inheritdoc />
     public override bool TryWrite(T item)
     {
-        ArgumentNullException.ThrowIfNull(item);
-
-        if (CheckCompleted())
+        if (_doneWriting != null)
             return false;
 
-        if (FullCapacity())
+        var msg = _serializer.WriteRedisValue(item);
+
+        if (!_opts.HasCapacity)
+            _db.ListRightPush(_channel, msg);
+        else
         {
             switch (_opts.FullMode)
             {
-                case BoundedChannelFullMode.DropWrite:
-                    return true;
                 case BoundedChannelFullMode.Wait:
-                    return false;
+                    if (Push(PushIfNotFull, msg) == 0)
+                        return false;
+
+                    break;
+                case BoundedChannelFullMode.DropWrite:
+                    // Channel is full: the item is dropped, but the write is reported as successful.
+                    if (Push(PushIfNotFull, msg) == 0)
+                        return true;
+
+                    break;
+                case BoundedChannelFullMode.DropNewest:
+                    Push(PushDropNewest, msg);
+                    break;
+                case BoundedChannelFullMode.DropOldest:
+                    Push(PushDropOldest, msg);
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unsupported full mode: {_opts.FullMode}");
             }
-        }
-
-        var dropNewest = $"""
-                redis.call('LTRIM', @key, 0, {_opts.Capacity - 2})
-                return redis.call('RPUSH', @key, @v)
-            """;
-
-        var dropOldest = $"""
-                local llen = redis.call('RPUSH', @key, @v)
-                if llen > {_opts.Capacity} then redis.call('LTRIM', @key, {-_opts.Capacity}, -1) end
-                return llen
-            """;
-
-        long len;
-        var msg = _serializer.WriteRedisValue(item);
-
-        switch (_opts.FullMode)
-        {
-            case BoundedChannelFullMode.DropNewest:
-                var r1 = _db.ScriptEvaluate(LuaScript.Prepare(dropNewest), new { key = (RedisKey)_channel, v = msg });
-                len = r1.IsNull ? 0 : (long)r1;
-                break;
-            case BoundedChannelFullMode.DropOldest:
-                var r2 = _db.ScriptEvaluate(LuaScript.Prepare(dropOldest), new { key = (RedisKey)_channel, v = msg });
-                len = r2.IsNull ? 0 : (long)r2;
-                break;
-            default:
-                len = _db.ListRightPush(_channel, msg);
-                break;
         }
 
         Metrics.MessageWritten(_channel);
         Notify();
 
-        return len > 0;
+        return true;
     }
 
     /// <inheritdoc />
     public override async ValueTask<bool> WaitToWriteAsync(CancellationToken cancellationToken = default)
     {
-        if (CheckCompleted())
-            return false;
-
         var sw = new Stopwatch();
 
-        if (_opts.FullMode == BoundedChannelFullMode.Wait)
+        while (true)
         {
-            while (FullCapacity())
+            var doneWriting = _doneWriting;
+
+            if (doneWriting != null)
             {
-                sw.Start();
-
-                if (cancellationToken.IsCancellationRequested)
-                    return await ValueTask.FromCanceled<bool>(cancellationToken).ConfigureAwait(false);
-
-                if (CheckCompleted())
+                if (doneWriting == RedisChannelUtils.DoneWritingException)
                     return false;
 
-                if (_opts.ChannelSlidingExpiration == TimeSpan.Zero)
-                    await _writerSync.WaitAsync(cancellationToken).ConfigureAwait(false);
-                else
-                    await _writerSync.WaitAsync(_opts.ChannelSlidingExpiration, cancellationToken).ConfigureAwait(false);
+                throw doneWriting;
             }
+
+            if (_opts.FullMode != BoundedChannelFullMode.Wait || !await FullCapacityAsync().ConfigureAwait(false))
+                break;
+
+            sw.Start();
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (_opts.ChannelSlidingExpiration == TimeSpan.Zero)
+                await _writerSync.WaitAsync(cancellationToken).ConfigureAwait(false);
+            else
+                await _writerSync.WaitAsync(_opts.ChannelSlidingExpiration, cancellationToken).ConfigureAwait(false);
         }
 
         if (sw.IsRunning)
@@ -208,30 +217,22 @@ public sealed class RedisChannelWriter<T> : ChannelWriter<T>, IDisposable
             if (!_db.StringSet(RedisChannelUtils.EofChannel(_channel), errMsg))
                 return false;
 
-            _sub.Publish(new RedisChannel(_channel, RedisChannel.PatternMode.Literal), RedisChannelUtils.CloseChannel);
+            _sub.Publish(RedisChannelUtils.PubSubChannel(_channel), RedisChannelUtils.CloseChannel);
 
-            if (_opts.ExpireAfterCompletion != TimeSpan.Zero)
+            var expiration = _opts.ExpireAfterCompletion != TimeSpan.Zero
+                ? _opts.ExpireAfterCompletion
+                : _opts.ChannelSlidingExpiration;
+
+            if (expiration != TimeSpan.Zero)
             {
-                _db.KeyExpire(_channel, _opts.ExpireAfterCompletion, CommandFlags.FireAndForget);
-                _db.KeyExpire(RedisChannelUtils.EofChannel(_channel), _opts.ExpireAfterCompletion, CommandFlags.FireAndForget);
-            }
-            else
-            {
-                if (_opts.ChannelSlidingExpiration != TimeSpan.Zero)
-                {
-                    _db.KeyExpire(_channel, _opts.ChannelSlidingExpiration, CommandFlags.FireAndForget);
-                    _db.KeyExpire(RedisChannelUtils.EofChannel(_channel), _opts.ChannelSlidingExpiration, CommandFlags.FireAndForget);
-                }
+                _db.KeyExpire(_channel, expiration, CommandFlags.FireAndForget);
+                _db.KeyExpire(RedisChannelUtils.EofChannel(_channel), expiration, CommandFlags.FireAndForget);
             }
         }
 
-        if (string.IsNullOrWhiteSpace(errMsg))
-            _doneWriting = RedisChannelUtils.DoneWritingException;
-        else
-        {
-            var ex = new ChannelClosedException(errMsg);
-            _doneWriting = ex;
-        }
+        _doneWriting = string.IsNullOrWhiteSpace(errMsg)
+            ? RedisChannelUtils.DoneWritingException
+            : new ChannelClosedException(errMsg);
 
         return true;
     }
